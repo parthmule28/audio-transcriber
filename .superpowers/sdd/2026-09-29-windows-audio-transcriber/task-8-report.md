@@ -82,7 +82,7 @@ This report is versioned separately from the implementation commit.
 - Confirmed the worker window is bounded to three; result assembly is index-ordered; timeout, 502, and 503 failures are not retried; retries replace the prior failure entry; and workspace cleanup runs on success, cancellation, and preparation failure.
 - Silence detection settings had to be added because Task 8 explicitly consumes them but Tasks 1–4 had not defined them. The values match the existing audio test settings (`-35.0 dB`, `0.4 s`).
 - The retry-charge notice is a standard Python `UserWarning`, not a GUI callback. A UI that must guarantee a visible confirmation should present it before calling `retry_failed()`.
-- Cancellation closes the injected `OpenRouterClient` best-effort. Since that client is not reopenable through the existing interface, retrying failures from a cancelled run with the same closed client may yield another partial report; callers needing that flow will need a fresh client/pipeline lifecycle.
+- Initial implementation concern, later addressed by the cancellation retry fixes below: cancellation closed the injected `OpenRouterClient` without a way to reopen it, which could prevent retries through the same client.
 
 ## Task 8 review-fix report
 
@@ -138,5 +138,74 @@ Exit code: 0; no output
 
 ### Updated concerns
 
-- The prior concern that cancellation leaves the same client permanently closed is resolved: the pipeline no longer closes the injected client. In-flight HTTP requests are therefore allowed to finish instead of being forcibly closed; already-sent requests may still complete or be billed, consistent with best-effort cancellation.
+- In the previous revision, cancellation left the client open so it remained reusable. That tradeoff was superseded by the in-flight cancellation re-review fix below, which closes the client and explicitly reopens it for retries.
 - The retry-charge notice remains a Python `UserWarning`, not a GUI callback. A UI that requires visible confirmation should present it before calling `retry_failed()`.
+
+## Task 8 in-flight cancellation re-review fix
+
+### Changes
+
+- Added `OpenRouterClient.reopen()`. The client retains its API key privately, base URL, timeout, and injected transport, and rebuilds the `httpx.Client` with those original settings after close. Context-manager exit uses the idempotent `close()` state; entering a closed client reopens it.
+- `TranscriptionPipeline.cancel()` sets the event and closes the current injected client best-effort. Cancellation-triggered errors in workers are reported as `CancelledError` when applicable, and the pipeline still records queued/unstarted spans as failures.
+- `retry_failed()` clears the prior cancellation event and reopens the client before resubmitting only failed spans. Its report's `cancelled` value and terminal callback now reflect only the retry attempt.
+- Added a blocked in-flight fake that observes `close()`, then verifies all interrupted/unscheduled indices are retryable using the reopened same client. Added an `OpenRouterClient` test verifying the injected `MockTransport`, auth header, URL, and timeout survive reopen; existing request-shape tests remain unchanged.
+
+### TDD and verification
+
+Before implementation, the cancellation regressions failed because in-flight chunks completed normally and retry did not call the fake client's reopen method:
+
+```text
+$ source .venv/bin/activate && python -m pytest tests/test_pipeline.py -k "cancelled_run_marks or cancelled_spans_retry or successful_retry_clears" -v
+2 failed, 1 passed, 19 deselected in 0.20s
+```
+
+The new client reopen test failed on the missing method:
+
+```text
+$ source .venv/bin/activate && python -m pytest tests/test_openrouter_client.py::test_reopen_preserves_key_base_url_timeout_and_injected_transport -v
+FAILED — AttributeError: 'OpenRouterClient' object has no attribute 'reopen'
+1 failed in 0.13s
+```
+
+Focused pipeline tests:
+
+```text
+$ source .venv/bin/activate && python -m pytest tests/test_pipeline.py -q
+......................                                                   [100%]
+22 passed in 0.17s
+```
+
+Pipeline and OpenRouter client tests:
+
+```text
+$ source .venv/bin/activate && python -m pytest tests/test_pipeline.py tests/test_openrouter_client.py -q
+.....................................................                    [100%]
+53 passed in 0.18s
+```
+
+Full suite:
+
+```text
+$ source .venv/bin/activate && python -m pytest tests/ -q
+........................................................................ [ 57%]
+.....................................................                    [100%]
+125 passed in 0.67s
+```
+
+Additional checks:
+
+```text
+$ source .venv/bin/activate && python -m compileall -q src/audio_transcriber tests
+Exit code: 0; no output
+
+$ git diff --check
+Exit code: 0; no output
+```
+
+### Fix commit
+
+- `e81b9c0a2e91283829dcf87d3be1a7d11e2573e2` — `fix: reopen OpenRouter client after cancellation`
+
+### Remaining consideration
+
+- Request interruption remains best-effort and transport-dependent; an already-sent provider request may still complete or be billed even though `close()` is invoked. The injected transport instance is reused on reopen; the regression test covers `httpx.MockTransport`.
