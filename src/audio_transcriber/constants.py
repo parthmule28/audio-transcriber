@@ -33,3 +33,6 @@ LANGUAGES = (
     "Arabic",
     "Hindi",
 )
+
+MIN_BOUNDARY_DEDUP_TOKENS = 3
+MAX_BOUNDARY_DEDUP_TOKENS = 20

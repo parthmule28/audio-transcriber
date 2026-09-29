@@ -33,3 +33,8 @@ def test_transport_audio_and_retry_constants_are_pinned():
     assert constants.RETRY_BASE_DELAY_SECONDS == 2.0
     assert isinstance(constants.LANGUAGES, tuple)
     assert constants.LANGUAGES
+
+
+def test_boundary_dedup_constants_are_pinned():
+    assert constants.MIN_BOUNDARY_DEDUP_TOKENS == 3
+    assert constants.MAX_BOUNDARY_DEDUP_TOKENS == 20
