@@ -32,3 +32,28 @@ Implemented temporary audio workspace creation, safe chunk paths, context-manage
 ## Commit
 
 `bc89b54` — `feat: manage and clean up the temporary audio workspace`
+
+## Review follow-up
+
+### Fixes and added coverage
+
+- `AudioWorkspace` now retains its original path after cleanup. Accessing `.path` or `.chunk_path()` after cleanup cannot silently create an untracked new directory; if cleanup was called before any directory existed, `.path` raises `RuntimeError` rather than creating one.
+- `cleanup_stale_workspaces()` catches `OSError` from an individual removal, continues scanning, and counts only candidates whose removal call completed successfully.
+- Added regressions for access after cleanup, lazy creation, and invalid indices (negative, boolean, float, string), plus a stale-removal error simulation.
+
+### Exact commands and output
+
+- `.venv/bin/python -m pytest tests/test_workdir.py -v` before production fixes — **2 failed, 8 passed**. The access-after-cleanup test demonstrated a newly created path; the stale-cleanup test demonstrated `OSError` aborting the scan.
+- `.venv/bin/python -m pytest tests/test_workdir.py -v` after fixes — **10 passed in 0.05s**.
+- `.venv/bin/python -m pytest -v` — **101 passed in 0.65s**.
+- `git diff --check` — passed.
+
+### Review self-check and concerns
+
+- Cleanup preserves the resolved path for stable post-cleanup access. Calling cleanup repeatedly remains harmless; context-manager behavior continues to use the same cleanup method.
+- A failed stale-directory removal is left intact and does not prevent later matching candidates from being attempted. Other candidates outside the exact prefix remain untouched.
+- No outstanding concerns identified.
+
+### Follow-up commit
+
+`28d4467` — `fix: make workspace cleanup resilient`

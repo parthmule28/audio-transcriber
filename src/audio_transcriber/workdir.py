@@ -14,10 +14,13 @@ class AudioWorkspace:
     def __init__(self, root: Path | None = None) -> None:
         self._root = root
         self._path: Path | None = None
+        self._cleaned = False
 
     @property
     def path(self) -> Path:
         if self._path is None:
+            if self._cleaned:
+                raise RuntimeError("workspace has been cleaned up")
             self._path = Path(
                 tempfile.mkdtemp(prefix=WORKSPACE_PREFIX, dir=self._root)
             )
@@ -31,7 +34,7 @@ class AudioWorkspace:
     def cleanup(self) -> None:
         if self._path is not None:
             shutil.rmtree(self._path, ignore_errors=True)
-            self._path = None
+        self._cleaned = True
 
     def __enter__(self) -> "AudioWorkspace":
         self.path
@@ -47,6 +50,9 @@ def cleanup_stale_workspaces(root: Path | None = None) -> int:
     removed = 0
     for candidate in directory.iterdir():
         if candidate.is_dir() and candidate.name.startswith(WORKSPACE_PREFIX):
-            shutil.rmtree(candidate)
+            try:
+                shutil.rmtree(candidate)
+            except OSError:
+                continue
             removed += 1
     return removed
