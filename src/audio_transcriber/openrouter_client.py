@@ -88,11 +88,19 @@ class OpenRouterClient:
         transport: httpx.BaseTransport | None = None,
         timeout: float = 60.0,
     ):
-        self._client = httpx.Client(
-            base_url=constants.OPENROUTER_BASE_URL,
-            timeout=timeout,
-            transport=transport,
-            headers={"Authorization": f"Bearer {api_key}"},
+        self._api_key = api_key
+        self._base_url = constants.OPENROUTER_BASE_URL
+        self._timeout = timeout
+        self._transport = transport
+        self._closed = False
+        self._client = self._build_client()
+
+    def _build_client(self) -> httpx.Client:
+        return httpx.Client(
+            base_url=self._base_url,
+            timeout=self._timeout,
+            transport=self._transport,
+            headers={"Authorization": f"Bearer {self._api_key}"},
         )
 
     def list_available_models(self) -> list[str]:
@@ -147,11 +155,22 @@ class OpenRouterClient:
         return TranscriptionResponse(text, usage, response.headers.get("X-Generation-Id"))
 
     def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
         self._client.close()
 
+    def reopen(self) -> None:
+        """Recreate the HTTP client with its original private configuration."""
+        if not self._closed:
+            return
+        self._client = self._build_client()
+        self._closed = False
+
     def __enter__(self) -> "OpenRouterClient":
+        self.reopen()
         self._client.__enter__()
         return self
 
     def __exit__(self, exc_type, exc_value, traceback) -> None:
-        self._client.__exit__(exc_type, exc_value, traceback)
+        self.close()

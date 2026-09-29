@@ -352,6 +352,7 @@ def test_results_are_assembled_in_index_order_not_completion_order(
 def cancelled_pipeline(tmp_media, fake_media, fake_workspace):
     fake_media["duration"] = 130.0
     release_in_flight = threading.Event()
+    interrupted = threading.Event()
     entered = {index: threading.Event() for index in (1, 2, 3)}
     first_finished = threading.Event()
     callbacks = RecordingCallbacks()
@@ -362,12 +363,16 @@ def cancelled_pipeline(tmp_media, fake_media, fake_workspace):
         if index in entered:
             entered[index].set()
             release_in_flight.wait(timeout=3)
+            if interrupted.is_set():
+                raise RuntimeError("request interrupted by client close")
         return response(f"chunk {index}")
 
     class ReusableClient(FakeClient):
         def __init__(self):
             super().__init__(handler)
             self.closed = False
+            self.reopen_calls = 0
+            self.interrupted = interrupted
 
         def transcribe(self, wav_path, model, language=None):
             if self.closed:
@@ -376,7 +381,14 @@ def cancelled_pipeline(tmp_media, fake_media, fake_workspace):
 
         def close(self):
             self.closed = True
+            interrupted.set()
+            release_in_flight.set()
             super().close()
+
+        def reopen(self):
+            self.closed = False
+            interrupted.clear()
+            self.reopen_calls += 1
 
     def on_chunk_finished(outcome):
         RecordingCallbacks.on_chunk_finished(callbacks, outcome)
@@ -420,12 +432,13 @@ def test_cancelled_run_marks_unstarted_spans_as_failed(cancelled_pipeline):
     report = cancelled_pipeline["report"]
     client = cancelled_pipeline["client"]
     assert report.cancelled is True
-    assert set(report.results) == {0, 1, 2, 3}
-    assert set(report.failures) == {4}
-    assert isinstance(report.failures[4], CancelledError)
+    assert set(report.results) == {0}
+    assert set(report.failures) == {1, 2, 3, 4}
+    assert all(isinstance(error, CancelledError) for error in report.failures.values())
     assert {call[0] for call in client.calls} == {0, 1, 2, 3}
     assert len(client.calls) == 4
-    assert client.close_calls == 0
+    assert client.interrupted.is_set()
+    assert client.close_calls == 1
     assert cancelled_pipeline["workspace"].cleanup_calls == 1
     assert not cancelled_pipeline["workspace"].path.exists()
     assert cancelled_pipeline["callbacks"].events[-1] == ("cancelled", True)
@@ -436,7 +449,10 @@ def test_cancelled_spans_retry_with_the_same_open_client(cancelled_pipeline):
     with pytest.warns(UserWarning, match="may incur another charge"):
         retried = cancelled_pipeline["pipeline"].retry_failed()
     assert client.closed is False
-    assert [call[0] for call in client.calls[cancelled_pipeline["initial_call_count"]:]] == [4]
+    assert client.reopen_calls == 1
+    assert set(call[0] for call in client.calls[cancelled_pipeline["initial_call_count"]:]) == {
+        1, 2, 3, 4,
+    }
     assert set(retried.results) == {0, 1, 2, 3, 4}
     assert retried.failures == {}
 
@@ -476,7 +492,7 @@ def test_cancel_during_backoff_stops_before_another_request(
     assert report.cancelled
     assert attempts == 1
     assert sleeps == [10]
-    assert client.close_calls == 0
+    assert client.close_calls == 1
 
 
 def test_retry_failed_resubmits_only_failed_indices_and_warns_about_cost(

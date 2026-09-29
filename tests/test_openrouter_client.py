@@ -40,6 +40,39 @@ def test_discovery_returns_allowlisted_models_in_allowlist_order():
         ]
 
 
+def test_reopen_preserves_key_base_url_timeout_and_injected_transport(monkeypatch):
+    requests = []
+
+    def handler(request):
+        requests.append(request)
+        return httpx.Response(200, json={"data": [{"id": "openai/whisper-large-v3-turbo"}]})
+
+    injected_transport = httpx.MockTransport(handler)
+    real_client = httpx.Client
+
+    def client_factory(*args, **kwargs):
+        if kwargs.get("transport") is None:
+            kwargs["transport"] = httpx.MockTransport(
+                lambda request: pytest.fail("reopened client lost its injected transport")
+            )
+        return real_client(*args, **kwargs)
+
+    monkeypatch.setattr("audio_transcriber.openrouter_client.httpx.Client", client_factory)
+    client = OpenRouterClient("sk-or-v1-test", transport=injected_transport, timeout=13.0)
+    assert client.list_available_models() == ["openai/whisper-large-v3-turbo"]
+    client.close()
+    client.reopen()
+    assert client.list_available_models() == ["openai/whisper-large-v3-turbo"]
+    assert len(requests) == 2
+    assert all(request.url.path == "/api/v1/models/user" for request in requests)
+    assert all(request.url.scheme == "https" and request.url.host == "openrouter.ai" for request in requests)
+    assert all(request.url.params["output_modalities"] == "transcription" for request in requests)
+    assert all(request.headers["Authorization"] == "Bearer sk-or-v1-test" for request in requests)
+    assert all(request.extensions["timeout"] == {
+        "connect": 13.0, "read": 13.0, "write": 13.0, "pool": 13.0,
+    } for request in requests)
+
+
 def test_discovery_does_not_fall_back_to_unapproved_models():
     with _client(lambda request: httpx.Response(200, json={"data": [
         {"id": "openai/whisper-1"},

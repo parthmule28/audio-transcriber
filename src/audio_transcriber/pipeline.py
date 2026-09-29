@@ -124,8 +124,15 @@ class TranscriptionPipeline:
         self._last_report: TranscriptionReport | None = None
 
     def cancel(self) -> None:
-        """Stop new work without taking ownership of the injected client's lifecycle."""
+        """Stop new work and close active requests on a best-effort basis."""
         self._cancel_event.set()
+        close = getattr(self.client, "close", None)
+        if callable(close):
+            try:
+                close()
+            except Exception:
+                # The cancellation event is authoritative even if closing fails.
+                pass
 
     def run(self, source: Path, *, language: str | None = None) -> TranscriptionReport:
         self._cancel_event.clear()
@@ -178,6 +185,9 @@ class TranscriptionPipeline:
             stacklevel=2,
         )
         self._cancel_event.clear()
+        reopen = getattr(self.client, "reopen", None)
+        if callable(reopen):
+            reopen()
         workspace = self._next_workspace()
         try:
             report = self._transcribe_spans(
