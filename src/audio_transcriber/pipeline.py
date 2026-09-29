@@ -115,8 +115,6 @@ class TranscriptionPipeline:
         self.sleep_fn = sleep_fn
 
         self._cancel_event = threading.Event()
-        self._client_close_lock = threading.Lock()
-        self._client_closed = False
         self._workspace_template = workspace
         self._workspace_root = getattr(workspace, "_root", None)
         self._workspace_used = False
@@ -126,18 +124,8 @@ class TranscriptionPipeline:
         self._last_report: TranscriptionReport | None = None
 
     def cancel(self) -> None:
+        """Stop new work without taking ownership of the injected client's lifecycle."""
         self._cancel_event.set()
-        with self._client_close_lock:
-            if self._client_closed:
-                return
-            self._client_closed = True
-        close = getattr(self.client, "close", None)
-        if callable(close):
-            try:
-                close()
-            except Exception:
-                # Closing an in-flight request is best effort; the event remains authoritative.
-                pass
 
     def run(self, source: Path, *, language: str | None = None) -> TranscriptionReport:
         self._cancel_event.clear()
@@ -198,7 +186,6 @@ class TranscriptionPipeline:
                 total_chunks=previous.total_chunks,
                 results=dict(previous.results),
                 failures=dict(previous.failures),
-                was_cancelled=previous.cancelled,
             )
         finally:
             workspace.cleanup()
@@ -221,7 +208,6 @@ class TranscriptionPipeline:
         total_chunks: int,
         results: dict[int, ChunkOutcome] | None = None,
         failures: dict[int, TranscriberError] | None = None,
-        was_cancelled: bool = False,
     ) -> TranscriptionReport:
         outcomes = {} if results is None else results
         errors = {} if failures is None else failures
@@ -259,11 +245,19 @@ class TranscriptionPipeline:
                         break
                     pending[executor.submit(self._transcribe_one, span, total_chunks, workspace)] = span
 
+        cancelled = self._cancel_event.is_set()
+        if cancelled:
+            for span in spans:
+                if span.index not in outcomes and span.index not in errors:
+                    error = CancelledError()
+                    errors[span.index] = error
+                    self.callbacks.on_chunk_failed(span.index, error)
+
         return TranscriptionReport(
             outcomes,
             errors,
             total_chunks,
-            cancelled=was_cancelled or self._cancel_event.is_set(),
+            cancelled=cancelled,
         )
 
     def _transcribe_one(

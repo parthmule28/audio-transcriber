@@ -348,57 +348,107 @@ def test_results_are_assembled_in_index_order_not_completion_order(
     assert report.transcript() == "first second third"
 
 
-def test_cancelled_run_keeps_partial_results_and_removes_workspace(
-    tmp_media, fake_media, fake_workspace
-):
-    fake_media["duration"] = 70.0
-    blocked = {1: threading.Event(), 2: threading.Event()}
-    entered = {1: threading.Event(), 2: threading.Event()}
+@pytest.fixture
+def cancelled_pipeline(tmp_media, fake_media, fake_workspace):
+    fake_media["duration"] = 130.0
+    release_in_flight = threading.Event()
+    entered = {index: threading.Event() for index in (1, 2, 3)}
     first_finished = threading.Event()
     callbacks = RecordingCallbacks()
 
-    class BlockingClient(FakeClient):
-        def transcribe(self, wav_path, model, language=None):
-            index = int(wav_path.stem.removeprefix("chunk_"))
-            if index == 0:
-                return response("first")
+    def handler(index, attempt, path):
+        if index == 0:
+            return response("first")
+        if index in entered:
             entered[index].set()
-            blocked[index].wait(timeout=3)
-            if self.close_calls:
-                raise RuntimeError("client closed during request")
-            return response(f"chunk {index}")
+            release_in_flight.wait(timeout=3)
+        return response(f"chunk {index}")
+
+    class ReusableClient(FakeClient):
+        def __init__(self):
+            super().__init__(handler)
+            self.closed = False
+
+        def transcribe(self, wav_path, model, language=None):
+            if self.closed:
+                raise RuntimeError("client is closed")
+            return super().transcribe(wav_path, model, language)
 
         def close(self):
+            self.closed = True
             super().close()
-            for event in blocked.values():
-                event.set()
-            raise RuntimeError("best-effort close failure")
 
-    callbacks.on_chunk_finished = lambda outcome: (
-        RecordingCallbacks.on_chunk_finished(callbacks, outcome),
-        first_finished.set() if outcome.index == 0 else None,
-    )
+    def on_chunk_finished(outcome):
+        RecordingCallbacks.on_chunk_finished(callbacks, outcome)
+        if outcome.index == 0:
+            first_finished.set()
+
+    callbacks.on_chunk_finished = on_chunk_finished
+    client = ReusableClient()
     pipeline = TranscriptionPipeline(
-        BlockingClient(), model="approved-model", callbacks=callbacks,
+        client, model="approved-model", callbacks=callbacks,
         workspace=fake_workspace, sleep_fn=lambda delay: None,
     )
-    reports = []
-    thread = threading.Thread(target=lambda: reports.append(pipeline.run(tmp_media)))
+    result = {}
+
+    def run_pipeline():
+        try:
+            result["report"] = pipeline.run(tmp_media)
+        except Exception as error:
+            result["error"] = error
+
+    thread = threading.Thread(target=run_pipeline)
     thread.start()
     assert first_finished.wait(timeout=2)
-    assert entered[1].wait(timeout=2)
-    assert entered[2].wait(timeout=2)
+    assert all(event.wait(timeout=2) for event in entered.values())
     pipeline.cancel()
+    release_in_flight.set()
     thread.join(timeout=3)
     assert not thread.is_alive()
-    report = reports[0]
+    assert "error" not in result
+    return {
+        "report": result["report"],
+        "pipeline": pipeline,
+        "client": client,
+        "callbacks": callbacks,
+        "workspace": fake_workspace,
+        "initial_call_count": len(client.calls),
+    }
+
+
+def test_cancelled_run_marks_unstarted_spans_as_failed(cancelled_pipeline):
+    report = cancelled_pipeline["report"]
+    client = cancelled_pipeline["client"]
     assert report.cancelled is True
-    assert 0 in report.results
-    assert set(report.failures) == {1, 2}
-    assert all(isinstance(error, CancelledError) for error in report.failures.values())
-    assert fake_workspace.cleanup_calls == 1
-    assert not fake_workspace.path.exists()
-    assert callbacks.events[-1] == ("cancelled", True)
+    assert set(report.results) == {0, 1, 2, 3}
+    assert set(report.failures) == {4}
+    assert isinstance(report.failures[4], CancelledError)
+    assert {call[0] for call in client.calls} == {0, 1, 2, 3}
+    assert len(client.calls) == 4
+    assert client.close_calls == 0
+    assert cancelled_pipeline["workspace"].cleanup_calls == 1
+    assert not cancelled_pipeline["workspace"].path.exists()
+    assert cancelled_pipeline["callbacks"].events[-1] == ("cancelled", True)
+
+
+def test_cancelled_spans_retry_with_the_same_open_client(cancelled_pipeline):
+    client = cancelled_pipeline["client"]
+    with pytest.warns(UserWarning, match="may incur another charge"):
+        retried = cancelled_pipeline["pipeline"].retry_failed()
+    assert client.closed is False
+    assert [call[0] for call in client.calls[cancelled_pipeline["initial_call_count"]:]] == [4]
+    assert set(retried.results) == {0, 1, 2, 3, 4}
+    assert retried.failures == {}
+
+
+def test_successful_retry_clears_cancelled_state_and_publishes_finished(
+    cancelled_pipeline,
+):
+    with pytest.warns(UserWarning, match="may incur another charge"):
+        retried = cancelled_pipeline["pipeline"].retry_failed()
+    assert retried.cancelled is False
+    assert cancelled_pipeline["callbacks"].events[-1] == ("finished", True)
+    assert ("cancelled", True) in cancelled_pipeline["callbacks"].events
 
 
 def test_cancel_during_backoff_stops_before_another_request(
@@ -426,7 +476,7 @@ def test_cancel_during_backoff_stops_before_another_request(
     assert report.cancelled
     assert attempts == 1
     assert sleeps == [10]
-    assert client.close_calls == 1
+    assert client.close_calls == 0
 
 
 def test_retry_failed_resubmits_only_failed_indices_and_warns_about_cost(
