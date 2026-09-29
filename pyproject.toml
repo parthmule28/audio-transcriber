@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "audio-transcriber"
+version = "0.1.0"
+requires-python = ">=3.11"
+dependencies = ["pyside6", "httpx>=0.27", "keyring>=25"]
+
+[project.optional-dependencies]
+dev = ["pytest", "pytest-qt"]
+packaging = ["pyinstaller>=6"]
+
+[project.scripts]
+audio-transcriber = "audio_transcriber.__main__:main"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
