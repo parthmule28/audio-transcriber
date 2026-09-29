@@ -142,17 +142,37 @@ def test_resolve_binary_raises_when_missing(tmp_path, monkeypatch):
 
 
 def test_detect_quiet_midpoints_returns_sorted_midpoints(monkeypatch):
+    duration = 10.0
     calls = fake_process(monkeypatch, stderr=(
         "[silencedetect] silence_start: 7.0\n"
         "[silencedetect] silence_end: 9.0 | silence_duration: 2.0\n"
         "[silencedetect] silence_start: 1.0\n"
         "[silencedetect] silence_end: 3.0 | silence_duration: 2.0\n"
     ))
+    monkeypatch.setattr("audio_transcriber.audio.probe", lambda source: MediaInfo(duration, True, "wav", None, None, None))
     result = detect_quiet_midpoints(Path("sample.wav"), noise_db=-35, min_duration=0.4,
                                     ffmpeg=Path("fake-ffmpeg"))
     assert result == [2.0, 8.0]
+    assert all(0.0 <= midpoint <= duration for midpoint in result)
     assert calls == [["fake-ffmpeg", "-nostdin", "-hide_banner", "-i", "sample.wav", "-vn",
                       "-af", "silencedetect=noise=-35dB:d=0.4", "-f", "null", "-"]]
+
+
+def test_detect_quiet_midpoints_bounds_completed_silences_to_media_duration(monkeypatch):
+    duration = 10.0
+    fake_process(monkeypatch, stderr=(
+        "[silencedetect] silence_start: 8.0\n"
+        "[silencedetect] silence_end: 20.0 | silence_duration: 12.0\n"
+        "[silencedetect] silence_start: 1.0\n"
+        "[silencedetect] silence_end: 3.0 | silence_duration: 2.0\n"
+        "[silencedetect] silence_start: 12.0\n"
+        "[silencedetect] silence_end: 15.0 | silence_duration: 3.0\n"
+    ))
+    monkeypatch.setattr("audio_transcriber.audio.probe", lambda source: MediaInfo(duration, True, "wav", None, None, None))
+    result = detect_quiet_midpoints(Path("sample.wav"), noise_db=-35, min_duration=0.4,
+                                    ffmpeg=Path("fake-ffmpeg"))
+    assert result == [2.0, 9.0]
+    assert all(0.0 <= midpoint <= duration for midpoint in result)
 
 
 def test_detect_quiet_midpoints_closes_trailing_silence_at_duration(monkeypatch):

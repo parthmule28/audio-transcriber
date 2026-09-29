@@ -84,7 +84,7 @@ def detect_quiet_midpoints(
     if result.returncode != 0:
         raise AudioPreparationError("Could not detect quiet sections")
 
-    midpoints: list[float] = []
+    intervals: list[tuple[float, float]] = []
     start: float | None = None
     for match in _SILENCE_EVENT.finditer(result.stderr):
         position = float(match.group(2))
@@ -92,13 +92,18 @@ def detect_quiet_midpoints(
             start = position
         elif start is not None:
             if position >= start:
-                midpoints.append((start + position) / 2)
+                intervals.append((start, position))
             start = None
+    if not intervals and start is None:
+        return []
+    duration = probe(source).duration
     if start is not None:
-        duration = probe(source).duration
-        if duration >= start:
-            midpoints.append((start + duration) / 2)
-    return sorted(midpoints)
+        intervals.append((start, duration))
+    return sorted(
+        (max(0.0, begin) + min(end, duration)) / 2
+        for begin, end in intervals
+        if 0.0 <= begin <= duration and end >= begin
+    )
 
 
 def extract_chunk(
