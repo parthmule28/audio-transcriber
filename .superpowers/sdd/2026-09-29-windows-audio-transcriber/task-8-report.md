@@ -83,3 +83,60 @@ This report is versioned separately from the implementation commit.
 - Silence detection settings had to be added because Task 8 explicitly consumes them but Tasks 1–4 had not defined them. The values match the existing audio test settings (`-35.0 dB`, `0.4 s`).
 - The retry-charge notice is a standard Python `UserWarning`, not a GUI callback. A UI that must guarantee a visible confirmation should present it before calling `retry_failed()`.
 - Cancellation closes the injected `OpenRouterClient` best-effort. Since that client is not reopenable through the existing interface, retrying failures from a cancelled run with the same closed client may yield another partial report; callers needing that flow will need a fresh client/pipeline lifecycle.
+
+## Task 8 review-fix report
+
+### Findings fixed
+
+1. Cancellation now adds `CancelledError` failures for spans in the current attempt that have neither a result nor another recorded failure. This includes spans never scheduled after cancellation, making them visible to `retry_failed()` while retaining successful in-flight results.
+2. `cancel()` now only signals the cancellation event. It does not close the injected client; its lifecycle remains caller-owned, so `retry_failed()` can resubmit spans using the same `OpenRouterClient`.
+3. Retry reports derive `cancelled` only from the retry attempt's event. A successful retry clears the previous cancellation state and publishes through `on_finished`; a retry that is newly cancelled publishes through `on_cancelled`.
+
+### Regression tests and TDD evidence
+
+The focused red run reproduced the review findings:
+
+```text
+$ source .venv/bin/activate && python -m pytest tests/test_pipeline.py -k "cancelled_run_marks or cancelled_spans_retry or successful_retry_clears or cancel_during_backoff" -v
+FAILED test_cancelled_run_marks_unstarted_spans_as_failed — expected unstarted index 4 in failures, got none
+FAILED test_cancelled_spans_retry_with_the_same_open_client — retry emitted no charge warning because it had no failed spans
+FAILED test_successful_retry_clears_cancelled_state_and_publishes_finished — retry emitted no charge warning because it had no failed spans
+FAILED test_cancel_during_backoff_stops_before_another_request — expected close_calls == 0, got 1
+4 failed, 18 deselected in 0.16s
+```
+
+Focused pipeline tests after the fixes:
+
+```text
+$ source .venv/bin/activate && python -m pytest tests/test_pipeline.py -q
+......................                                                   [100%]
+22 passed in 0.14s
+```
+
+Full suite after the fixes:
+
+```text
+$ source .venv/bin/activate && python -m pytest tests/ -q
+........................................................................ [ 58%]
+....................................................                     [100%]
+124 passed in 0.66s
+```
+
+Additional checks:
+
+```text
+$ source .venv/bin/activate && python -m compileall -q src/audio_transcriber tests
+Exit code: 0; no output
+
+$ git diff --check
+Exit code: 0; no output
+```
+
+### Fix commit
+
+- `990ab8d1c7db1d9c06e26fed1b0ce88a74bcf53e` — `fix: preserve cancelled chunks for retry with reusable client`
+
+### Updated concerns
+
+- The prior concern that cancellation leaves the same client permanently closed is resolved: the pipeline no longer closes the injected client. In-flight HTTP requests are therefore allowed to finish instead of being forcibly closed; already-sent requests may still complete or be billed, consistent with best-effort cancellation.
+- The retry-charge notice remains a Python `UserWarning`, not a GUI callback. A UI that requires visible confirmation should present it before calling `retry_failed()`.
