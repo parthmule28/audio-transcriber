@@ -35,6 +35,11 @@ def test_transport_audio_and_retry_constants_are_pinned():
     assert constants.LANGUAGES
 
 
+def test_pipeline_silence_detection_settings_are_pinned():
+    assert constants.SILENCE_NOISE_DB == -35.0
+    assert constants.SILENCE_MIN_DURATION == 0.4
+
+
 def test_boundary_dedup_constants_are_pinned():
     assert constants.MIN_BOUNDARY_DEDUP_TOKENS == 3
     assert constants.MAX_BOUNDARY_DEDUP_TOKENS == 20
