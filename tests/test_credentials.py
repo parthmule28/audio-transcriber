@@ -63,6 +63,32 @@ def test_backend_exceptions_are_wrapped_without_echoing_key():
     assert key not in str(error.value)
 
 
+def test_delete_backend_exception_is_wrapped_without_echoing_secret(monkeypatch):
+    import sys
+    import types
+
+    secret = "sk-or-v1-delete-secret"
+    keyring_module = types.ModuleType("keyring")
+    errors_module = types.ModuleType("keyring.errors")
+
+    class PasswordDeleteError(Exception):
+        pass
+
+    errors_module.PasswordDeleteError = PasswordDeleteError
+    keyring_module.errors = errors_module
+    monkeypatch.setitem(sys.modules, "keyring", keyring_module)
+    monkeypatch.setitem(sys.modules, "keyring.errors", errors_module)
+
+    class BrokenDeleteBackend(FakeBackend):
+        def delete_password(self, service, username):
+            raise RuntimeError(secret)
+
+    store = CredentialStore(BrokenDeleteBackend(), require_windows_backend=False)
+    with pytest.raises(CredentialStoreUnavailable) as error:
+        store.forget()
+    assert secret not in str(error.value)
+
+
 def test_injected_non_windows_backend_is_rejected_by_default():
     with pytest.raises(CredentialStoreUnavailable):
         CredentialStore(FakeBackend())

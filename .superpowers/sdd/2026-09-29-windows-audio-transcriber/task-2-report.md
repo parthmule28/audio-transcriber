@@ -33,3 +33,11 @@
 
 ## Commit
 Pending at report creation; commit hash is recorded in the task completion response.
+
+## Review fix: delete-backend exception handling
+
+- Bound the caught delete exception as `exc`, so the missing-credential check no longer raises `NameError`; unexpected backend failures are translated to the generic `CredentialStoreUnavailable` with exception chaining suppressed.
+- Added `test_delete_backend_exception_is_wrapped_without_echoing_secret`, with a simulated `keyring.errors.PasswordDeleteError` type and a backend exception containing a sentinel secret.
+- Regression test was confirmed RED before the fix: `NameError: name 'exc' is not defined` (1 failed, 8 passed).
+- `.venv/bin/python -m pytest tests/test_credentials.py -q` — `9 passed in 0.02s`.
+- `.venv/bin/python -m pytest tests/ -q` — `16 passed in 0.03s`.

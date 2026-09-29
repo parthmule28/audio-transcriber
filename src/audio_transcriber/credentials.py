@@ -73,7 +73,7 @@ class CredentialStore:
         self._check_backend()
         try:
             self._backend.delete_password(SERVICE_NAME, ACCOUNT_NAME)
-        except Exception:
+        except Exception as exc:
             # keyring uses PasswordDeleteError for a missing entry.
             try:
                 from keyring.errors import PasswordDeleteError
