@@ -27,3 +27,20 @@
 
 ## Commit
 - `a66df6a` — `feat: assemble ordered transcripts with boundary-only deduplication`.
+
+## Follow-up fix: accumulated transcript boundary tail
+
+### Change
+- `TranscriptAssembler.text()` now supplies the accumulated joined transcript to `dedupe_boundary`, rather than only the preceding chunk. The deduper still inspects only the accumulated suffix and incoming prefix, bounded by the existing 3..20 token limits; interior repeated phrases remain untouched.
+- Added `test_assembler_checks_boundary_against_accumulated_transcript_tail`. It uses chunks `"one two three"`, `"four"`, and `"two three four five two three four"`, verifying the first three-token boundary overlap is removed while the later interior repeat survives.
+
+### Verification
+- RED: `.venv/bin/python -m pytest tests/test_transcript.py -v` — **1 failed, 9 passed**. The new regression expected `one two three four five two three four` but got `one two three four two three four five two three four`.
+- GREEN: `.venv/bin/python -m pytest tests/test_transcript.py -v` — **10 passed**.
+- `.venv/bin/python -m pytest` — **91 passed**.
+
+### Review finding
+- Addressed: join-point comparisons now use all assembled text as the previous input; deduplication remains suffix-to-prefix only, so no global phrase removal was introduced. Empty chunks and sorted index traversal are unchanged.
+
+### Follow-up commit
+- `ce475bd` — `fix: dedupe transcript boundaries against accumulated text`.

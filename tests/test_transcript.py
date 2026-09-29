@@ -57,3 +57,11 @@ def test_assembler_deduplicates_only_at_join_points():
         "opening completely unique words we saw four bright stars in the sky "
         "and then dawn"
     )
+
+
+def test_assembler_checks_boundary_against_accumulated_transcript_tail():
+    assembler = TranscriptAssembler()
+    assembler.add(0, "one two three")
+    assembler.add(1, "four")
+    assembler.add(2, "two three four five two three four")
+    assert assembler.text() == "one two three four five two three four"

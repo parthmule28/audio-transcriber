@@ -51,7 +51,7 @@ class TranscriptAssembler:
             if not chunk.strip():
                 continue
             if assembled:
-                chunk = dedupe_boundary(assembled[-1], chunk)
+                chunk = dedupe_boundary(" ".join(assembled), chunk)
             if chunk.strip():
                 assembled.append(chunk)
         return " ".join(assembled)
