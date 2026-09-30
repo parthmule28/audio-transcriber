@@ -257,3 +257,59 @@ Additional checks:
 - The BtbN archive URL is still the plan-mandated unpinned `latest` URL. The archive digest is recorded for traceability only and is not compared against a pin. The archive provides its GPLv3 license text; any additional notices required by libraries linked into that exact FFmpeg build still need review before redistribution. This limitation is called out in the generated metadata and license index.
 - The version-tagged Qt/PySide6 and CPython source fallback requires network access when those texts are absent from the local wheel/runtime. Packaging fails clearly instead of producing the ZIP if that retrieval fails.
 - The complete Windows/PyInstaller release run was not performed in this Linux environment.
+
+## Task 13 Re-review Fix — Offline FFmpeg CLI Test Fixture — 2026-09-30
+
+### Fix
+
+- Updated the cached FFmpeg test fixture to contain non-empty `FFMPEG-LICENSE.txt` and `FFMPEG-ARCHIVE-METADATA.txt` alongside both executables. The metadata includes the source URL, archive entry, and 64-character traceability digest expected from the fetch step.
+- Kept the subprocess CLI test on the complete cache and added a direct CLI test whose `urlopen` raises if any network fetch is attempted.
+- No production code or behavior changed.
+
+### Verification
+
+The new cache-completeness assertion was run first and failed before the CLI subprocess could run (so no live download occurred):
+
+```text
+PYTHONPATH=src QT_QPA_PLATFORM=offscreen uv run --no-project --with pytest --with pytest-qt --with pyside6 --with httpx --with keyring -- python -m pytest tests/test_build_release.py::test_fetch_script_cli_accepts_destination_and_uses_existing_binaries -q
+```
+
+```text
+F                                                                        [100%]
+1 failed in 0.12s
+```
+
+After fixing the fixture, the three cache/offline CLI tests passed:
+
+```text
+PYTHONPATH=src QT_QPA_PLATFORM=offscreen uv run --no-project --with pytest --with pytest-qt --with pyside6 --with httpx --with keyring -- python -m pytest tests/test_build_release.py::test_fetch_returns_existing_binaries_without_downloading tests/test_build_release.py::test_fetch_cli_uses_license_complete_cache_without_network tests/test_build_release.py::test_fetch_script_cli_accepts_destination_and_uses_existing_binaries -q
+```
+
+```text
+...                                                                      [100%]
+3 passed in 0.15s
+```
+
+Focused packaging/license/workflow tests:
+
+```text
+PYTHONPATH=src QT_QPA_PLATFORM=offscreen uv run --no-project --with pytest --with pytest-qt --with pyside6 --with httpx --with keyring -- python -m pytest tests/test_build_release.py tests/test_license_material.py tests/test_release_workflow.py -q
+```
+
+```text
+......................                                                   [100%]
+22 passed in 0.23s
+```
+
+Full suite:
+
+```text
+PYTHONPATH=src QT_QPA_PLATFORM=offscreen uv run --no-project --with pytest --with pytest-qt --with pyside6 --with httpx --with keyring -- python -m pytest tests/ -q
+```
+
+```text
+........................................................................ [ 40%]
+........................................................................ [ 80%]
+..................................                                       [100%]
+178 passed in 1.53s
+```

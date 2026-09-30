@@ -213,23 +213,46 @@ def _ffmpeg_archive() -> bytes:
     return stream.getvalue()
 
 
-def test_fetch_returns_existing_binaries_without_downloading(tmp_path, monkeypatch):
-    binary_dir = tmp_path / "bin"
-    binary_dir.mkdir()
+def _write_cached_ffmpeg_assets(binary_dir: Path) -> tuple[Path, Path]:
+    binary_dir.mkdir(parents=True, exist_ok=True)
     ffmpeg = binary_dir / "ffmpeg.exe"
     ffprobe = binary_dir / "ffprobe.exe"
     ffmpeg.write_bytes(b"existing ffmpeg")
     ffprobe.write_bytes(b"existing ffprobe")
-    (binary_dir / fetch_ffmpeg.LICENSE_FILENAME).write_text("archive license", encoding="utf-8")
-    (binary_dir / fetch_ffmpeg.ARCHIVE_METADATA_FILENAME).write_text(
-        "archive metadata", encoding="utf-8"
+    (binary_dir / fetch_ffmpeg.LICENSE_FILENAME).write_text(
+        "GNU GENERAL PUBLIC LICENSE\nVersion 3, 29 June 2007\n",
+        encoding="utf-8",
     )
+    (binary_dir / fetch_ffmpeg.ARCHIVE_METADATA_FILENAME).write_text(
+        f"Source URL: {fetch_ffmpeg.FFMPEG_URL}\n"
+        "Archive entry: ffmpeg-master-latest-win64-gpl/LICENSE.txt\n"
+        "Archive SHA-256 (traceability only; not pinned): " + "a" * 64 + "\n",
+        encoding="utf-8",
+    )
+    return ffmpeg, ffprobe
+
+
+def test_fetch_returns_existing_binaries_without_downloading(tmp_path, monkeypatch):
+    binary_dir = tmp_path / "bin"
+    ffmpeg, ffprobe = _write_cached_ffmpeg_assets(binary_dir)
 
     def unexpected_download(*args, **kwargs):
         raise AssertionError("existing binaries should not trigger a download")
 
     monkeypatch.setattr(fetch_ffmpeg, "urlopen", unexpected_download)
     assert fetch_ffmpeg.fetch(binary_dir) == (ffmpeg, ffprobe)
+
+
+def test_fetch_cli_uses_license_complete_cache_without_network(tmp_path, monkeypatch):
+    binary_dir = tmp_path / "ffmpeg bin"
+    _write_cached_ffmpeg_assets(binary_dir)
+
+    def unexpected_download(*args, **kwargs):
+        raise AssertionError("complete cached assets must not trigger a network fetch")
+
+    monkeypatch.setattr(fetch_ffmpeg, "urlopen", unexpected_download)
+
+    assert fetch_ffmpeg.main([str(binary_dir)]) == 0
 
 
 def test_fetch_downloads_binaries_and_license_material_from_archive(tmp_path, monkeypatch):
@@ -291,9 +314,11 @@ def test_fetch_cli_passes_the_destination_argument_as_a_path(monkeypatch, tmp_pa
 
 def test_fetch_script_cli_accepts_destination_and_uses_existing_binaries(tmp_path):
     binary_dir = tmp_path / "ffmpeg bin"
-    binary_dir.mkdir()
-    (binary_dir / "ffmpeg.exe").write_bytes(b"ffmpeg")
-    (binary_dir / "ffprobe.exe").write_bytes(b"ffprobe")
+    _write_cached_ffmpeg_assets(binary_dir)
+    license_path = binary_dir / fetch_ffmpeg.LICENSE_FILENAME
+    metadata_path = binary_dir / fetch_ffmpeg.ARCHIVE_METADATA_FILENAME
+    assert license_path.is_file() and license_path.read_bytes().strip()
+    assert metadata_path.is_file() and metadata_path.read_bytes().strip()
 
     result = subprocess.run(
         [sys.executable, str(REPO_ROOT / "packaging" / "fetch_ffmpeg.py"), str(binary_dir)],
