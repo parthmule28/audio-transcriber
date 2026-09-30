@@ -16,9 +16,10 @@ def main(argv: list[str] | None = None) -> int:
         arguments = raw_argv
 
     if "--self-test" in arguments:
-        from audio_transcriber import selftest
+        from importlib import import_module
 
-        return selftest.run_self_test()
+        result = import_module("audio_transcriber.selftest").run_self_test()
+        return result if isinstance(result, int) else (0 if result.ok else 1)
 
     from audio_transcriber.ui.app import build_application
     from audio_transcriber.ui.main_window import MainWindow
