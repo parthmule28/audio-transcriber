@@ -1,3 +1,4 @@
+import sys
 from types import SimpleNamespace
 
 from audio_transcriber.selftest import run_self_test
@@ -34,6 +35,24 @@ def test_self_test_writes_identical_summary_to_log(tmp_path, monkeypatch, capsys
     output = capsys.readouterr().out
     assert (tmp_path / "self-test.log").read_text() == output
     assert all(name in output for name, _, _ in result.checks)
+
+
+def test_self_test_writes_log_when_windowed_stdout_is_unavailable(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(sys, "stdout", None)
+
+    result = run_self_test(probe_fn=fake_probe_ok, binary_probe=lambda name: f"/fake/{name}")
+
+    assert [name for name, _, _ in result.checks] == [
+        "python-version",
+        "qt-initialised",
+        "ffmpeg",
+        "ffprobe",
+    ]
+    log = (tmp_path / "self-test.log").read_text(encoding="utf-8")
+    assert "python-version: " in log
+    assert "ffmpeg: PASS" in log
+    assert "ffprobe: PASS" in log
 
 
 def test_self_test_makes_no_network_call_and_reads_no_credential(monkeypatch, tmp_path):

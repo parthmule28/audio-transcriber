@@ -1,0 +1,213 @@
+from __future__ import annotations
+
+import ast
+import io
+import runpy
+import sys
+import zipfile
+from pathlib import Path
+
+import pytest
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(REPO_ROOT / "packaging"))
+
+import build_release
+import fetch_ffmpeg
+
+
+def fake_pyinstaller_runner(argv, *, cwd):
+    assert isinstance(argv, (list, tuple))
+    assert Path(cwd) == REPO_ROOT
+    dist_path = Path(argv[argv.index("--distpath") + 1])
+    app_dir = dist_path / "AudioTranscriber"
+    licenses_dir = app_dir / "LICENSES"
+    licenses_dir.mkdir(parents=True)
+    (app_dir / "AudioTranscriber.exe").write_bytes(b"app")
+    (app_dir / "ffmpeg.exe").write_bytes(b"ffmpeg")
+    (app_dir / "ffprobe.exe").write_bytes(b"ffprobe")
+    (licenses_dir / "README.md").write_text("Third-party notices", encoding="utf-8")
+
+    # A build directory may contain project or developer data; the release ZIP must not.
+    (app_dir / "sample.wav").write_bytes(b"audio")
+    (app_dir / "nested").mkdir()
+    (app_dir / "nested" / "recording.M4A").write_bytes(b"audio")
+    (app_dir / "nested" / "recording.mp3").write_bytes(b"audio")
+    (app_dir / ".env").write_text("TOKEN=secret", encoding="utf-8")
+    (app_dir / "API_KEY_BACKUP.json").write_text("secret", encoding="utf-8")
+    key_dir = app_dir / "private-key-cache"
+    key_dir.mkdir()
+    (key_dir / "metadata.json").write_text("secret", encoding="utf-8")
+
+
+def test_zip_contains_expected_layout_and_name(tmp_path):
+    zip_path = build_release.build(
+        "9.9.9", output_dir=tmp_path, repo_root=REPO_ROOT, runner=fake_pyinstaller_runner
+    )
+
+    assert zip_path == tmp_path / "AudioTranscriber-v9.9.9-win-x64.zip"
+    names = build_release.zip_contents(zip_path)
+    assert "AudioTranscriber/AudioTranscriber.exe" in names
+    assert "AudioTranscriber/ffmpeg.exe" in names
+    assert "AudioTranscriber/ffprobe.exe" in names
+    assert "AudioTranscriber/LICENSES/README.md" in names
+    assert names == sorted(names)
+
+
+def test_zip_root_folder_is_named_for_the_app(tmp_path):
+    zip_path = build_release.build(
+        "1.2.3", output_dir=tmp_path, repo_root=REPO_ROOT, runner=fake_pyinstaller_runner
+    )
+
+    assert all(name.startswith("AudioTranscriber/") for name in build_release.zip_contents(zip_path))
+
+
+def test_zip_excludes_media_environment_and_key_files(tmp_path):
+    zip_path = build_release.build(
+        "1.2.3", output_dir=tmp_path, repo_root=REPO_ROOT, runner=fake_pyinstaller_runner
+    )
+
+    forbidden = (".wav", ".m4a", ".mp3", ".env")
+    names = build_release.zip_contents(zip_path)
+    assert not [name for name in names if name.lower().endswith(forbidden)]
+    assert not [name for name in names if ".env/" in name.lower() or ".env." in name.lower()]
+    assert not [
+        name
+        for name in names
+        if any("key" in component.lower() for component in Path(name).parts)
+    ]
+
+
+def _execute_spec(spec_text: str, packaging_dir: Path):
+    packaging_dir.mkdir(parents=True, exist_ok=True)
+    spec_path = packaging_dir / "AudioTranscriber.spec"
+    spec_path.write_text(spec_text, encoding="utf-8")
+    calls = {}
+
+    class FakeAnalysis:
+        scripts = []
+        pure = []
+        binaries = []
+        datas = []
+
+    def analysis(*args, **kwargs):
+        calls["analysis"] = kwargs
+        return FakeAnalysis()
+
+    def executable(*args, **kwargs):
+        calls["exe"] = kwargs
+        return object()
+
+    def collect(*args, **kwargs):
+        calls["collect"] = kwargs
+        return object()
+
+    globals_for_spec = {
+        "SPECPATH": str(packaging_dir),
+        "Analysis": analysis,
+        "PYZ": lambda *args, **kwargs: object(),
+        "EXE": executable,
+        "COLLECT": collect,
+    }
+    runpy.run_path(str(spec_path), init_globals=globals_for_spec)
+    return calls
+
+
+def test_spec_is_parseable_onedir_and_includes_only_existing_optional_assets(tmp_path):
+    spec_path = REPO_ROOT / "packaging" / "AudioTranscriber.spec"
+    spec_text = spec_path.read_text(encoding="utf-8")
+    ast.parse(spec_text)
+    assert "COLLECT" in spec_text
+    assert "onefile" not in spec_text.lower()
+    assert 'name="AudioTranscriber"' in spec_text
+    assert "console=False" in spec_text
+    for module in (
+        "PySide6.QtQml",
+        "PySide6.QtQuick",
+        "PySide6.Qt3DCore",
+        "PySide6.QtWebEngineCore",
+        "pytest",
+        "_pytest",
+        "tests",
+        "test",
+    ):
+        assert module in spec_text
+
+    packaging_dir = tmp_path / "packaging"
+    no_assets = _execute_spec(spec_text, packaging_dir)
+    assert no_assets["analysis"]["datas"] == []
+    assert no_assets["exe"]["console"] is False
+    assert no_assets["exe"]["contents_directory"] == "."
+
+    bin_dir = packaging_dir / "bin"
+    bin_dir.mkdir()
+    (bin_dir / "ffmpeg.exe").write_bytes(b"ffmpeg")
+    (bin_dir / "ffprobe.exe").write_bytes(b"ffprobe")
+    licenses_dir = packaging_dir.parent / "LICENSES"
+    licenses_dir.mkdir()
+    datas = _execute_spec(spec_text, packaging_dir)["analysis"]["datas"]
+    destinations = {destination for _, destination in datas}
+    assert destinations == {".", "LICENSES"}
+
+
+def _ffmpeg_archive() -> bytes:
+    stream = io.BytesIO()
+    with zipfile.ZipFile(stream, "w") as archive:
+        archive.writestr("ffmpeg-master-latest-win64-gpl/bin/ffmpeg.exe", b"ffmpeg-binary")
+        archive.writestr("ffmpeg-master-latest-win64-gpl/bin/ffprobe.exe", b"ffprobe-binary")
+    return stream.getvalue()
+
+
+def test_fetch_returns_existing_binaries_without_downloading(tmp_path, monkeypatch):
+    binary_dir = tmp_path / "bin"
+    binary_dir.mkdir()
+    ffmpeg = binary_dir / "ffmpeg.exe"
+    ffprobe = binary_dir / "ffprobe.exe"
+    ffmpeg.write_bytes(b"existing ffmpeg")
+    ffprobe.write_bytes(b"existing ffprobe")
+
+    def unexpected_download(*args, **kwargs):
+        raise AssertionError("existing binaries should not trigger a download")
+
+    monkeypatch.setattr(fetch_ffmpeg, "urlopen", unexpected_download)
+    assert fetch_ffmpeg.fetch(binary_dir) == (ffmpeg, ffprobe)
+
+
+def test_fetch_downloads_only_the_two_expected_binaries(tmp_path, monkeypatch):
+    archive_bytes = _ffmpeg_archive()
+    monkeypatch.setattr(fetch_ffmpeg, "urlopen", lambda *args, **kwargs: io.BytesIO(archive_bytes))
+
+    ffmpeg, ffprobe = fetch_ffmpeg.fetch(tmp_path / "bin")
+
+    assert ffmpeg.read_bytes() == b"ffmpeg-binary"
+    assert ffprobe.read_bytes() == b"ffprobe-binary"
+    assert sorted(path.name for path in ffmpeg.parent.iterdir()) == ["ffmpeg.exe", "ffprobe.exe"]
+
+
+def test_fetch_wraps_download_errors_with_the_source_url(tmp_path, monkeypatch):
+    def failed_download(*args, **kwargs):
+        raise OSError("offline")
+
+    monkeypatch.setattr(fetch_ffmpeg, "urlopen", failed_download)
+
+    with pytest.raises(RuntimeError, match=fetch_ffmpeg.FFMPEG_URL):
+        fetch_ffmpeg.fetch(tmp_path / "bin")
+
+
+def test_default_build_runner_uses_argv_and_reports_missing_pyinstaller(tmp_path, monkeypatch):
+    calls = []
+
+    def missing_pyinstaller(argv, *, cwd, check):
+        calls.append((argv, cwd, check))
+        raise FileNotFoundError("python environment has no PyInstaller")
+
+    monkeypatch.setattr(build_release.subprocess, "run", missing_pyinstaller)
+
+    with pytest.raises(RuntimeError, match="PyInstaller"):
+        build_release.build("1.2.3", output_dir=tmp_path, repo_root=REPO_ROOT)
+
+    argv, cwd, check = calls[0]
+    assert isinstance(argv, list)
+    assert "-m" in argv and "PyInstaller" in argv
+    assert cwd == REPO_ROOT
+    assert check is True
