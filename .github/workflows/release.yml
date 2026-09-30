@@ -1,0 +1,63 @@
+name: Windows release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+jobs:
+  release:
+    runs-on: windows-2022
+    permissions:
+      contents: write
+    steps:
+      # No secrets or OpenRouter API key are used, and no step uploads .wav/.m4a media files.
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -e ".[dev,packaging]"
+
+      - name: Run tests
+        run: python -m pytest tests/ -q
+
+      - name: Fetch FFmpeg and FFprobe
+        run: python packaging/fetch_ffmpeg.py packaging/bin
+
+      - name: Build release archive
+        shell: bash
+        run: python packaging/build_release.py --version "${GITHUB_REF_NAME#v}"
+
+      - name: Self-test packaged application
+        run: |
+          & dist/AudioTranscriber/AudioTranscriber.exe --self-test
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $log = Get-Content -Raw dist/AudioTranscriber/self-test.log
+          $requiredChecks = @(
+            "python-version: PASS",
+            "qt-initialised: PASS",
+            "ffmpeg: PASS",
+            "ffprobe: PASS"
+          )
+          foreach ($check in $requiredChecks) {
+            if (-not $log.Contains($check)) {
+              throw "Self-test log is missing required check: $check"
+            }
+          }
+
+      - name: Upload release archive artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: AudioTranscriber-release
+          path: dist/AudioTranscriber-v*-win-x64.zip
+          if-no-files-found: error
+
+      - name: Publish GitHub Release
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/AudioTranscriber-v*-win-x64.zip
