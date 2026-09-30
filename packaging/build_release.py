@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import ast
 import os
 import re
 import subprocess
@@ -17,6 +18,21 @@ from license_material import collect_release_license_material, validate_release_
 
 _VERSION_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9.+-]*\Z")
 _EXCLUDED_AUDIO_SUFFIXES = {".wav", ".m4a", ".mp3"}
+
+
+def _package_version(repo_root: Path) -> str:
+    """Read the single package version source without importing application code."""
+    init_path = repo_root / "src" / "audio_transcriber" / "__init__.py"
+    module = ast.parse(init_path.read_text(encoding="utf-8"), filename=str(init_path))
+    for node in module.body:
+        if isinstance(node, ast.Assign) and any(
+            isinstance(target, ast.Name) and target.id == "__version__"
+            for target in node.targets
+        ):
+            value = ast.literal_eval(node.value)
+            if isinstance(value, str):
+                return value
+    raise ValueError("src/audio_transcriber/__init__.py must define a literal __version__")
 
 
 def _default_runner(argv: Sequence[str], *, cwd: Path) -> None:
@@ -65,6 +81,11 @@ def build(
 
     repo_root = Path(repo_root).resolve()
     output_dir = Path(output_dir).resolve()
+    package_version = _package_version(repo_root)
+    if version != package_version:
+        raise ValueError(
+            f"release version {version!r} must match package version {package_version!r}"
+        )
     spec_path = repo_root / "packaging" / "AudioTranscriber.spec"
     if not spec_path.is_file():
         raise FileNotFoundError(f"PyInstaller spec does not exist: {spec_path}")

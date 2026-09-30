@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import threading
 from typing import Callable
 
 from PySide6.QtCore import QObject, QThread, QTimer, Qt, Signal, Slot
@@ -27,7 +28,7 @@ from PySide6.QtWidgets import (
 
 from audio_transcriber import constants
 from audio_transcriber.credentials import CredentialStore
-from audio_transcriber.errors import NoApprovedModelAvailable, TranscriberError
+from audio_transcriber.errors import CancelledError, NoApprovedModelAvailable, TranscriberError
 from audio_transcriber.openrouter_client import OpenRouterClient
 from audio_transcriber.pipeline import (
     ChunkOutcome,
@@ -70,6 +71,10 @@ class _WorkerCallbacks(PipelineCallbacks):
 
     def on_cancelled(self, report: TranscriptionReport) -> None:
         self._worker._remember_terminal(report)
+
+
+class _ModelDiscoverySignals(QObject):
+    completed = Signal(int, object, object)
 
 
 class PipelineWorker(QObject):
@@ -253,6 +258,7 @@ class MainWindow(QMainWindow):
         self._client = client
         self._owns_client = client is None
         self._injected_pipeline_factory = pipeline_factory
+        self._client_factory = OpenRouterClient
         self._settings = AppSettings()
         self._api_key: str | None = None
         self._selected_file: Path | None = None
@@ -265,6 +271,10 @@ class MainWindow(QMainWindow):
         self._close_when_finished = False
         self._startup_cancelled = False
         self._credential_error: str | None = None
+        self._model_loading = False
+        self._discovery_generation = 0
+        self._discovery_signals = _ModelDiscoverySignals()
+        self._discovery_signals.completed.connect(self._on_model_discovery_complete)
 
         self._build_widgets()
         self.zdr_acknowledgement.setChecked(self._settings.zdr_acknowledged)
@@ -273,6 +283,7 @@ class MainWindow(QMainWindow):
         self.transcribe_button.clicked.connect(self._start_transcription)
         self.cancel_button.clicked.connect(self._cancel_transcription)
         self.retry_button.clicked.connect(self._retry_failed)
+        self.key_settings_button.clicked.connect(self._manage_key)
         self.copy_button.clicked.connect(self.copy_transcript)
         self.save_button.clicked.connect(self.save_transcript)
         self.model_combo.currentIndexChanged.connect(self._update_controls)
@@ -322,7 +333,8 @@ class MainWindow(QMainWindow):
         options_row.addWidget(QLabel("Language:", central))
         self.language_combo = QComboBox(central)
         self.language_combo.setObjectName("language_combo")
-        self.language_combo.addItems(constants.LANGUAGES)
+        for label, code in constants.LANGUAGES:
+            self.language_combo.addItem(label, code)
         options_row.addWidget(self.language_combo, 1)
         layout.addLayout(options_row)
 
@@ -333,6 +345,8 @@ class MainWindow(QMainWindow):
         self.cancel_button.setObjectName("cancel_button")
         self.retry_button = QPushButton("Retry failed chunks", central)
         self.retry_button.setObjectName("retry_button")
+        self.key_settings_button = QPushButton("API key settings…", central)
+        self.key_settings_button.setObjectName("key_settings_button")
         self.copy_button = QPushButton("Copy", central)
         self.copy_button.setObjectName("copy_button")
         self.save_button = QPushButton("Save As", central)
@@ -340,6 +354,7 @@ class MainWindow(QMainWindow):
         action_row.addWidget(self.transcribe_button)
         action_row.addWidget(self.cancel_button)
         action_row.addWidget(self.retry_button)
+        action_row.addWidget(self.key_settings_button)
         action_row.addStretch(1)
         action_row.addWidget(self.copy_button)
         action_row.addWidget(self.save_button)
@@ -430,16 +445,39 @@ class MainWindow(QMainWindow):
         self._update_controls()
 
     def refresh_models(self) -> None:
-        """Discover available models and never substitute a default model."""
+        """Discover models off the GUI thread; never substitute a default model."""
+        self._discovery_generation += 1
+        generation = self._discovery_generation
         self._available_models.clear()
         self.model_combo.clear()
         if self._client is None:
-            self.status_label.setText("Approved transcription models could not be checked.")
+            self._model_loading = False
+            self.status_label.setText("Set an OpenRouter API key to check approved models.")
             self._update_controls()
             return
-        try:
-            discovered = self._client.list_available_models()
-        except Exception as error:
+
+        client = self._client
+        signals = self._discovery_signals
+        self._model_loading = True
+        self.status_label.setText("Checking approved transcription models…")
+        self._update_controls()
+
+        def discover() -> None:
+            try:
+                models = client.list_available_models()
+            except Exception as error:
+                signals.completed.emit(generation, None, error)
+            else:
+                signals.completed.emit(generation, models, None)
+
+        threading.Thread(target=discover, name="model-discovery", daemon=True).start()
+
+    @Slot(int, object, object)
+    def _on_model_discovery_complete(self, generation: int, discovered: object, error: object) -> None:
+        if generation != self._discovery_generation:
+            return
+        self._model_loading = False
+        if error is not None:
             self.status_label.setText(
                 self._safe_message(error, "The approved transcription models could not be fetched.")
             )
@@ -447,7 +485,7 @@ class MainWindow(QMainWindow):
             return
 
         allowed = set(constants.ALLOWED_MODELS)
-        for model in discovered:
+        for model in discovered or ():
             if model in allowed and model not in self._available_models:
                 self._available_models.append(model)
         self.model_combo.addItems(self._available_models)
@@ -484,9 +522,7 @@ class MainWindow(QMainWindow):
         self.retry_button.setEnabled(False)
         self.progress_bar.setRange(0, 0)
         self.status_label.setText("Analyzing audio…")
-        language = self.language_combo.currentText()
-        if language == constants.LANGUAGES[0]:
-            language = None
+        language = self.language_combo.currentData()
 
         factory = self._injected_pipeline_factory
         key = self._api_key
@@ -572,7 +608,13 @@ class MainWindow(QMainWindow):
         self.cost_label.setText(report.cost_note())
         self._total_chunks = report.total_chunks
         self.progress_bar.setRange(0, max(1, report.total_chunks))
-        self.progress_bar.setValue(report.total_chunks)
+        if cancelled or report.cancelled:
+            progress = len(report.results) + sum(
+                not isinstance(error, CancelledError) for error in report.failures.values()
+            )
+        else:
+            progress = report.total_chunks
+        self.progress_bar.setValue(min(progress, self.progress_bar.maximum()))
         if cancelled or report.cancelled:
             self.status_label.setText(
                 "Transcription cancelled. In-flight requests may still have been billed."
@@ -669,12 +711,56 @@ class MainWindow(QMainWindow):
         self._settings.zdr_acknowledged = acknowledged
         self._update_controls()
 
+    def _manage_key(self) -> None:
+        if self._running or self._store is None:
+            return
+        dialog = KeyDialog(self._store, self)
+        dialog.setWindowTitle("OpenRouter API key settings")
+        dialog.exec()
+        try:
+            key = self._store.load()
+        except Exception as error:
+            self.status_label.setText(
+                self._safe_message(error, "The saved API credential could not be read safely.")
+            )
+            return
+        if key != self._api_key or dialog.was_forgotten:
+            self._apply_api_key(key, force=dialog.was_forgotten)
+
+    def _apply_api_key(self, key: str | None, *, force: bool = False) -> None:
+        if key == self._api_key and not force:
+            return
+        previous_client = self._client
+        self._api_key = key
+        self._settings.zdr_acknowledged = False
+        self.zdr_acknowledgement.setChecked(False)
+        if previous_client is not None:
+            close = getattr(previous_client, "close", None)
+            if callable(close):
+                try:
+                    close()
+                except Exception:
+                    pass
+        self._client = self._client_factory(key) if key else None
+        self._owns_client = key is not None
+        if key:
+            self.refresh_models()
+        else:
+            self._discovery_generation += 1
+            self._model_loading = False
+            self._available_models.clear()
+            self.model_combo.clear()
+            self.status_label.setText(
+                "The API key was forgotten. Open API key settings to enter another key."
+            )
+            self._update_controls()
+
     def _update_controls(self, *_args) -> None:
         available = self.model_combo.currentText() in self._available_models
         has_file = self._selected_file is not None and bool(self.file_edit.text())
         acknowledged = self._settings.zdr_acknowledged
         self.transcribe_button.setEnabled(
-            not self._running and has_file and available and acknowledged
+            not self._running and not self._model_loading and has_file and available and acknowledged
         )
         self.browse_button.setEnabled(not self._running)
         self.file_edit.setEnabled(True)
@@ -684,6 +770,7 @@ class MainWindow(QMainWindow):
         self.retry_button.setEnabled(
             not self._running and self._last_report is not None and bool(self._last_report.failures)
         )
+        self.key_settings_button.setEnabled(not self._running)
 
     def _safe_message(self, error: object, fallback: str) -> str:
         if isinstance(error, TranscriberError):

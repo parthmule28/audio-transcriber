@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import sys
 
+from audio_transcriber.workdir import cleanup_stale_workspaces
+
 
 def main(argv: list[str] | None = None) -> int:
     """Run the self-test directly or launch the Qt desktop application."""
@@ -21,6 +23,7 @@ def main(argv: list[str] | None = None) -> int:
         result = import_module("audio_transcriber.selftest").run_self_test()
         return result if isinstance(result, int) else (0 if result.ok else 1)
 
+    cleanup_stale_workspaces()
     from audio_transcriber.ui.app import build_application
     from audio_transcriber.ui.main_window import MainWindow
 

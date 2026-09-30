@@ -6,7 +6,7 @@ import types
 from pathlib import Path
 
 import pytest
-from PySide6.QtCore import QSettings
+from PySide6.QtCore import QSettings, QTimer
 from PySide6.QtWidgets import (
     QApplication,
     QDialog,
@@ -14,6 +14,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QLineEdit,
     QMessageBox,
+    QPushButton,
 )
 
 from audio_transcriber import constants
@@ -33,6 +34,9 @@ class FakeStore:
 
     def save(self, key: str) -> None:
         self.key = key
+
+    def forget(self) -> None:
+        self.key = None
 
 
 class FakeClient:
@@ -57,7 +61,12 @@ def _window(qtbot, **kwargs) -> MainWindow:
     window = MainWindow(store=FakeStore(), client=FakeClient(), **kwargs)
     qtbot.addWidget(window)
     window.show()
+    _wait_for_discovery(qtbot, window)
     return window
+
+
+def _wait_for_discovery(qtbot, window: MainWindow) -> None:
+    qtbot.waitUntil(lambda: not getattr(window, "_model_loading", True), timeout=5000)
 
 
 def _choose_file(window: MainWindow, monkeypatch, path: Path) -> None:
@@ -247,6 +256,7 @@ def test_model_combo_contains_only_available_allowlisted_models(qtbot):
     client = FakeClient(["unapproved/model", "openai/whisper-large-v3"])
     window = MainWindow(store=FakeStore(), client=client)
     qtbot.addWidget(window)
+    _wait_for_discovery(qtbot, window)
 
     assert window.available_models() == ["openai/whisper-large-v3"]
     assert [window.model_combo.itemText(i) for i in range(window.model_combo.count())] == [
@@ -257,6 +267,7 @@ def test_model_combo_contains_only_available_allowlisted_models(qtbot):
 def test_no_approved_model_disables_transcription_without_a_fallback(qtbot):
     window = MainWindow(store=FakeStore(), client=FakeClient([]))
     qtbot.addWidget(window)
+    _wait_for_discovery(qtbot, window)
 
     assert window.available_models() == []
     assert window.model_combo.count() == 0
@@ -264,6 +275,37 @@ def test_no_approved_model_disables_transcription_without_a_fallback(qtbot):
     assert "no approved" in window.status_label.text().lower()
     window.show()
     assert window.zdr_warning_label.isVisible()
+
+
+def test_model_discovery_runs_in_background_while_the_window_remains_responsive(qtbot):
+    entered = threading.Event()
+    release = threading.Event()
+    timer_fired = threading.Event()
+    discovery_thread_ids = []
+
+    class BlockingDiscoveryClient(FakeClient):
+        def list_available_models(self):
+            discovery_thread_ids.append(threading.get_ident())
+            entered.set()
+            release.wait(timeout=5)
+            return list(self.models)
+
+    gui_thread_id = threading.get_ident()
+    window = MainWindow(store=FakeStore(), client=BlockingDiscoveryClient())
+    qtbot.addWidget(window)
+    window.show()
+    QTimer.singleShot(10, timer_fired.set)
+
+    try:
+        qtbot.waitUntil(entered.is_set, timeout=2000)
+        qtbot.waitUntil(timer_fired.is_set, timeout=1000)
+        assert window._model_loading
+        assert "checking" in window.status_label.text().lower()
+        assert discovery_thread_ids and discovery_thread_ids[0] != gui_thread_id
+    finally:
+        release.set()
+    _wait_for_discovery(qtbot, window)
+    assert window.available_models() == [constants.ALLOWED_MODELS[0]]
 
 
 def test_pipeline_runs_off_gui_thread_and_updates_progress_transcript_and_cost(
@@ -287,6 +329,25 @@ def test_pipeline_runs_off_gui_thread_and_updates_progress_transcript_and_cost(
     assert window.cost_label.text() == "Total cost reported by OpenRouter: $0.0060"
     assert window.copy_button.isEnabled()
     assert window.save_button.isEnabled()
+
+
+def test_language_combo_passes_the_selected_iso_code_to_the_pipeline(
+    qtbot, monkeypatch, tmp_path, completing_pipeline_factory
+):
+    window = _window(qtbot, pipeline_factory=completing_pipeline_factory)
+    audio = tmp_path / "recording.wav"
+    audio.write_bytes(b"audio")
+    _choose_file(window, monkeypatch, audio)
+    _acknowledge(window)
+
+    index = window.language_combo.findText("Japanese")
+    assert index >= 0
+    window.language_combo.setCurrentIndex(index)
+    assert window.language_combo.currentData() == "ja"
+    window._start_transcription()
+    qtbot.waitUntil(lambda: bool(window.transcript_edit.toPlainText()), timeout=5000)
+
+    assert completing_pipeline_factory.pipelines[0].language == "ja"
 
 
 def test_default_pipeline_factory_creates_a_fresh_client_per_run(
@@ -375,6 +436,7 @@ def test_cancel_keeps_partial_transcript_and_enables_retry(
     qtbot.waitUntil(lambda: window.retry_button.isEnabled(), timeout=5000)
 
     assert window.transcript_edit.toPlainText() == "partial transcript"
+    assert window.progress_bar.value() == 1
     assert "may still have been billed" in window.status_label.text().lower()
 
     gui_thread = threading.get_ident()
@@ -383,6 +445,20 @@ def test_cancel_keeps_partial_transcript_and_enables_retry(
     assert pipeline.retry_thread_id != gui_thread
     assert window.progress_bar.value() == 2
     assert not window.retry_button.isEnabled()
+
+
+def test_cancelled_progress_counts_finished_chunks_not_cancelled_work(qtbot):
+    window = _window(qtbot)
+    report = TranscriptionReport(
+        {0: _response("successful")},
+        {1: TranscriberError(), 2: CancelledError()},
+        3,
+        cancelled=True,
+    )
+
+    window._show_report(report, cancelled=True)
+
+    assert window.progress_bar.value() == 2
 
 
 def test_partial_finished_report_shows_failure_count_and_keeps_transcript(
@@ -453,12 +529,75 @@ def test_api_key_is_never_shown_in_main_window(qtbot):
     secret = "sk-or-v1-private-key"
     window = MainWindow(store=FakeStore(secret), client=FakeClient())
     qtbot.addWidget(window)
+    _wait_for_discovery(qtbot, window)
 
     displayed = [label.text() for label in window.findChildren(QLabel)]
     displayed.extend(edit.text() for edit in window.findChildren(QLineEdit))
     displayed.append(window.transcript_edit.toPlainText())
 
     assert all(secret not in value for value in displayed)
+
+
+def _schedule_key_dialog_action(action: str, secret: str | None = None) -> None:
+    def interact_with_dialog():
+        dialog = QApplication.activeModalWidget()
+        assert dialog is not None
+        if action == "replace":
+            field = dialog.findChild(QLineEdit, "api_key_edit")
+            assert field is not None
+            field.setText(secret or "")
+            next(button for button in dialog.findChildren(QPushButton)
+                 if button.text() == "Save").click()
+        else:
+            next(button for button in dialog.findChildren(QPushButton)
+                 if button.text() == "Forget key").click()
+            QTimer.singleShot(0, dialog.reject)
+
+    QTimer.singleShot(0, interact_with_dialog)
+
+
+def test_reachable_key_settings_replace_forget_reset_ack_and_rediscover(
+    qtbot, monkeypatch
+):
+    from audio_transcriber.ui import main_window
+
+    store = FakeStore("old-key")
+    created_clients = []
+
+    class KeyClient(FakeClient):
+        def __init__(self, key):
+            super().__init__([constants.ALLOWED_MODELS[1]])
+            self.key = key
+            created_clients.append(self)
+
+    monkeypatch.setattr(main_window, "OpenRouterClient", KeyClient)
+    window = MainWindow(store=store, client=FakeClient())
+    qtbot.addWidget(window)
+    _wait_for_discovery(qtbot, window)
+    _acknowledge(window)
+    replacement = "sk-or-v1-replacement-secret"
+
+    _schedule_key_dialog_action("replace", replacement)
+    window.key_settings_button.click()
+    qtbot.waitUntil(lambda: not window._model_loading, timeout=5000)
+
+    assert store.key == replacement
+    assert window._api_key == replacement
+    assert AppSettings().zdr_acknowledged is False
+    assert not window.zdr_acknowledgement.isChecked()
+    assert created_clients[-1].key == replacement
+    assert window.available_models() == [constants.ALLOWED_MODELS[1]]
+    displayed = [widget.text() for widget in window.findChildren(QLabel)]
+    displayed.extend(widget.text() for widget in window.findChildren(QLineEdit))
+    assert all(replacement not in value for value in displayed)
+
+    _schedule_key_dialog_action("forget")
+    window.key_settings_button.click()
+
+    assert store.key is None
+    assert window._api_key is None
+    assert window.available_models() == []
+    assert AppSettings().zdr_acknowledged is False
 
 
 def test_copy_action_copies_only_the_current_transcript(qtbot):
@@ -527,6 +666,30 @@ def test_main_self_test_dispatch_does_not_start_the_gui(monkeypatch):
     assert calls == ["self-test"]
 
 
+def test_normal_startup_cleans_stale_workspaces_before_constructing_the_window(monkeypatch):
+    from audio_transcriber import __main__ as entrypoint
+    from audio_transcriber.ui import app as app_module
+    from audio_transcriber.ui import main_window as window_module
+
+    events = []
+
+    class FakeApplication:
+        def exec(self):
+            events.append("exec")
+            return 0
+
+    class FakeWindow:
+        def show(self):
+            events.append("show")
+
+    monkeypatch.setattr(entrypoint, "cleanup_stale_workspaces", lambda: events.append("cleanup"))
+    monkeypatch.setattr(app_module, "build_application", lambda argv: FakeApplication())
+    monkeypatch.setattr(window_module, "MainWindow", FakeWindow)
+
+    assert entrypoint.main([]) == 0
+    assert events == ["cleanup", "show", "exec"]
+
+
 def test_startup_cancelled_when_no_saved_key_and_key_dialog_is_rejected(qtbot, monkeypatch):
     from audio_transcriber.ui import main_window
 
@@ -571,6 +734,7 @@ def test_normal_application_preserves_platform_override(qtbot, monkeypatch):
 
 
 def test_main_shows_window_and_returns_qt_event_loop_result(monkeypatch):
+    from audio_transcriber import __main__ as entrypoint
     from audio_transcriber.ui import app as app_module
     from audio_transcriber.ui import main_window as window_module
 
@@ -591,6 +755,6 @@ def test_main_shows_window_and_returns_qt_event_loop_result(monkeypatch):
     monkeypatch.setattr(app_module, "build_application", lambda argv: FakeApplication())
     monkeypatch.setattr(window_module, "MainWindow", FakeWindow)
 
-    from audio_transcriber import __main__ as entrypoint
+    monkeypatch.setattr(entrypoint, "cleanup_stale_workspaces", lambda: None)
     assert entrypoint.main([]) == 23
     assert events == ["construct", "show", "exec"]

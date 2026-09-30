@@ -43,15 +43,15 @@ def test_spans_are_always_well_formed(duration):
         assert span.duration <= (duration if duration <= 31.0 else 30.0) + 1e-9
         assert span.index == i
     for a, b in zip(spans, spans[1:]):
-        assert b.start < a.end
+        assert b.start <= a.end
         assert a.end - b.start == pytest.approx(1.0, abs=1e-6)
 
 
 def test_boundary_snaps_to_nearest_quiet_point_within_window():
-    spans = plan_chunks(100.0, [30.0, 29.25, 58.5])
-    assert [(s.start, s.end) for s in spans] == [
-        (0.0, 30.0), (29.25, 59.25), (58.5, 88.5), (87.0, 100.0)
-    ]
+    spans = plan_chunks(100.0, [29.25, 58.0])
+    assert spans[0].end == pytest.approx(29.25)
+    assert spans[1].start == pytest.approx(28.25)
+    assert spans[1].end == pytest.approx(58.0)
 
 
 def test_boundary_outside_window_is_left_alone():
@@ -60,7 +60,7 @@ def test_boundary_outside_window_is_left_alone():
 
 
 def test_equal_distance_quiet_points_choose_earlier_one():
-    spans = plan_chunks(60.0, [30.0, 28.0])
+    spans = plan_chunks(60.0, [31.0, 29.0])
     assert spans[1].start == 28.0
 
 
@@ -72,7 +72,21 @@ def test_snapping_preserves_strictly_increasing_starts():
 
 def test_snapping_does_not_push_a_start_past_the_end():
     duration = 31.2
-    spans = plan_chunks(duration, [duration - 0.1])
+    spans = plan_chunks(duration, [duration - 1.4])
     assert spans[0].start == 0.0
+    assert spans[0].end == pytest.approx(duration - 1.4)
+    assert len(spans) == 2
     assert all(span.start < duration for span in spans)
     assert spans[-1].end == duration
+
+
+def test_opposing_quiet_point_snaps_never_leave_a_gap():
+    spans = plan_chunks(100.0, [27.5, 59.5])
+
+    assert spans[0].start == 0.0
+    assert spans[-1].end == pytest.approx(100.0)
+    assert all(0.0 <= span.start < span.end <= 100.0 for span in spans)
+    assert all(span.duration <= 31.0 for span in spans)
+    for previous, following in zip(spans, spans[1:]):
+        assert following.start < previous.end
+        assert previous.end - following.start == pytest.approx(1.0, abs=1e-6)

@@ -1,11 +1,13 @@
 import shutil
 import threading
 from pathlib import Path
+import sys
 
 import pytest
 
 from audio_transcriber import constants
 from audio_transcriber.audio import MediaInfo
+from audio_transcriber import audio as audio_module
 from audio_transcriber.errors import (
     AudioPreparationError,
     CancelledError,
@@ -22,6 +24,7 @@ from audio_transcriber.pipeline import (
     TranscriptionPipeline,
     TranscriptionReport,
 )
+from audio_transcriber.workdir import AudioWorkspace
 
 
 class FakeWorkspace:
@@ -120,15 +123,19 @@ def fake_workspace(tmp_path):
 def fake_media(monkeypatch):
     state = {"duration": 20.0, "quiet": [], "probes": [], "extractions": []}
 
-    def probe(source, *, ffprobe=None):
+    def probe(source, *, ffprobe=None, cancel_event=None, timeout=None):
         state["probes"].append((source, ffprobe))
         return MediaInfo(state["duration"], True, "wav", "pcm_s16le", 44100, 1)
 
-    def detect_quiet_midpoints(source, *, noise_db, min_duration, ffmpeg=None):
+    def detect_quiet_midpoints(
+        source, *, noise_db, min_duration, ffmpeg=None, cancel_event=None, timeout=None
+    ):
         state["quiet_args"] = (source, noise_db, min_duration, ffmpeg)
         return list(state["quiet"])
 
-    def extract_chunk(source, start, duration, out_path, *, ffmpeg=None):
+    def extract_chunk(
+        source, start, duration, out_path, *, ffmpeg=None, cancel_event=None, timeout=None
+    ):
         out_path.parent.mkdir(parents=True, exist_ok=True)
         out_path.write_bytes(b"synthetic fake chunk")
         state["extractions"].append((start, duration, out_path, ffmpeg))
@@ -196,7 +203,7 @@ def test_run_uses_fixed_chunk_plan_and_extracts_only_in_workers(
     report = run_one_shot(client, tmp_media, workspace=fake_workspace, callbacks=callbacks)
     assert report.total_chunks == 4
     assert sorted((start, duration) for start, duration, *_ in fake_media["extractions"]) == [
-        (0.0, 30.0), (30.0, 30.0), (58.0, 30.0), (87.0, 13.0)
+        (0.0, 30.0), (29.0, 30.0), (58.0, 30.0), (87.0, 13.0)
     ]
     assert fake_media["quiet_args"][1:3] == (-35.0, 0.4)
     assert callbacks.events[0] == ("analyzing",)
@@ -210,7 +217,7 @@ def test_no_audio_stream_propagates_and_workspace_is_cleaned(
 ):
     monkeypatch.setattr(
         "audio_transcriber.pipeline.probe",
-        lambda source, *, ffprobe=None: (_ for _ in ()).throw(NoAudioStreamError()),
+        lambda source, **kwargs: (_ for _ in ()).throw(NoAudioStreamError()),
     )
     with pytest.raises(NoAudioStreamError):
         run_one_shot(FakeClient(), tmp_media, workspace=fake_workspace)
@@ -535,9 +542,80 @@ def test_failed_new_run_cannot_reuse_stale_retry_state(
     pipeline.run(tmp_media)
     monkeypatch.setattr(
         "audio_transcriber.pipeline.probe",
-        lambda source, *, ffprobe=None: (_ for _ in ()).throw(NoAudioStreamError()),
+        lambda source, **kwargs: (_ for _ in ()).throw(NoAudioStreamError()),
     )
     with pytest.raises(NoAudioStreamError):
         pipeline.run(tmp_media)
     with pytest.raises(RuntimeError, match=r"run\(\)"):
         pipeline.retry_failed()
+
+
+def test_cancellation_during_ffmpeg_extraction_kills_child_and_returns_partial_report(
+    tmp_media, tmp_path, monkeypatch
+):
+    child_started = threading.Event()
+    processes = []
+    real_popen = audio_module.subprocess.Popen
+    real_runner = audio_module._run_bounded_process
+    client = FakeClient()
+    workspace = AudioWorkspace(root=tmp_path)
+
+    def recording_popen(*args, **kwargs):
+        process = real_popen(*args, **kwargs)
+        processes.append(process)
+        return process
+
+    def block_ffmpeg(args, *, timeout, cancel_event=None):
+        if args[0] == "fake-ffmpeg":
+            pid_path = tmp_path / f"ffmpeg-{Path(args[-1]).stem}.pid"
+            code = (
+                "from pathlib import Path; import os, sys, time; "
+                "Path(sys.argv[1]).write_text(str(os.getpid())); time.sleep(30)"
+            )
+            child_started.set()
+            return real_runner(
+                [sys.executable, "-c", code, str(pid_path)],
+                timeout=timeout,
+                cancel_event=cancel_event,
+            )
+        return real_runner(args, timeout=timeout, cancel_event=cancel_event)
+
+    monkeypatch.setattr(audio_module.subprocess, "Popen", recording_popen)
+    monkeypatch.setattr(audio_module, "_run_bounded_process", block_ffmpeg)
+    monkeypatch.setattr(
+        "audio_transcriber.pipeline.probe",
+        lambda source, **kwargs: MediaInfo(70.0, True, "wav", "pcm_s16le", 16000, 1),
+    )
+    monkeypatch.setattr(
+        "audio_transcriber.pipeline.detect_quiet_midpoints",
+        lambda source, **kwargs: [],
+    )
+    pipeline = TranscriptionPipeline(
+        client, model="approved-model", ffmpeg=Path("fake-ffmpeg"), workspace=workspace
+    )
+    result = {}
+
+    def run_pipeline():
+        result["report"] = pipeline.run(tmp_media)
+
+    thread = threading.Thread(target=run_pipeline)
+    thread.start()
+    assert child_started.wait(timeout=2)
+    pid_files = []
+    for _ in range(100):
+        pid_files = list(tmp_path.glob("ffmpeg-*.pid"))
+        if pid_files:
+            break
+        threading.Event().wait(0.01)
+    assert pid_files
+    pipeline.cancel()
+    thread.join(timeout=5)
+
+    assert not thread.is_alive()
+    report = result["report"]
+    assert report.cancelled is True
+    assert report.results == {}
+    assert report.failures
+    assert not client.calls
+    assert processes and all(process.poll() is not None for process in processes)
+    assert workspace._path is not None and not workspace._path.exists()

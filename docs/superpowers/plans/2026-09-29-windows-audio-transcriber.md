@@ -381,9 +381,9 @@ git commit -m "feat: add OpenRouter client with model discovery and error mappin
 - Produces:
   - `class MediaInfo(NamedTuple)`: `duration: float`, `has_audio: bool`, `format_name: str`, `codec_name: str | None`, `sample_rate: int | None`, `channels: int | None`.
   - `resolve_binary(name: str, *, bundled_dir: Path | None = None) -> Path` — searches `bundled_dir` (when frozen, the directory containing the executable) then `shutil.which(name)`; raises `FfmpegMissingError` if neither yields an executable.
-  - `probe(source: Path, *, ffprobe: Path | None = None) -> MediaInfo`
-  - `detect_quiet_midpoints(source: Path, *, noise_db: float, min_duration: float, ffmpeg: Path | None = None) -> list[float]` — ascending midpoints of detected silences, in seconds.
-  - `extract_chunk(source: Path, start: float, duration: float, out_path: Path, *, ffmpeg: Path | None = None) -> Path` — writes 16 kHz mono s16le WAV to `out_path` and returns it.
+  - `probe(source: Path, *, ffprobe: Path | None = None, cancel_event: Event | None = None, timeout: float = ...) -> MediaInfo`
+  - `detect_quiet_midpoints(..., cancel_event: Event | None = None, timeout: float = ...) -> list[float]` — bounded and cancellable, returning ascending silence midpoints.
+  - `extract_chunk(..., cancel_event: Event | None = None, timeout: float = ...) -> Path` — bounded and cancellable; writes canonical WAV and reaps its child on cancellation.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -424,15 +424,15 @@ When `sys.frozen` is true, default `bundled_dir` to `Path(sys.executable).parent
 
 - [ ] **Step 4: Implement `probe`**
 
-Run `ffprobe -v error -print_format json -show_format -show_streams <source>` via `subprocess.run([...], capture_output=True, text=True, check=False)` — always an argument list, never `shell=True`. On a non-zero return code or unparseable JSON, raise `AudioPreparationError`. If `streams` contains no entry with `codec_type == "audio"`, raise `NoAudioStreamError` (Review Focus item 1). Otherwise build `MediaInfo` from the first audio stream plus `format.duration`, raising `AudioPreparationError` when duration is missing or non-positive.
+Run `ffprobe -v error -print_format json -show_format -show_streams <source>` via a shared `Popen` helper using an argument list and finite deadline. Poll the cancellation event; on cancel/timeout terminate, wait briefly, kill if necessary, and reap. On a non-zero return code or unparseable JSON, raise `AudioPreparationError`. If no audio stream exists, raise `NoAudioStreamError`.
 
 - [ ] **Step 5: Implement `detect_quiet_midpoints`**
 
-Run `ffmpeg -nostdin -hide_banner -i <source> -vn -af silencedetect=noise=<noise_db>dB:d=<min_duration> -f null -`, capture stderr, and parse with `re` for `silence_start:` and `silence_end:` pairs. Return `sorted((start + end) / 2 for each pair)`. Silence that runs to end-of-file has no `silence_end`; pair it with the media duration. If no silence is found, return `[]` — the caller then uses the plain target boundaries.
+Run the silence scan through the same cancellable, time-bounded process helper; parse silence events as before. Propagate cancellation and report timeouts as readable `AudioPreparationError`s.
 
 - [ ] **Step 6: Implement `extract_chunk`**
 
-Run `ffmpeg -nostdin -hide_banner -y -ss <start> -t <duration> -i <source> -vn -ac 1 -ar 16000 -c:a pcm_s16le -f wav <out_path>`. Create `out_path.parent` if needed. On non-zero return code, raise `AudioPreparationError` with a short, key-free summary. Add no denoise, volume, or silence filters. Do not delete or modify the source.
+Run extraction through the same cancellable, time-bounded helper. Create `out_path.parent` if needed. On timeout or non-zero return code, raise `AudioPreparationError` with a short, key-free summary. Add no denoise, volume, or silence filters. Do not delete or modify the source.
 
 - [ ] **Step 7: Run the tests to verify they pass**
 
@@ -492,14 +492,14 @@ def test_spans_are_always_well_formed(duration):
     assert spans[-1].end == pytest.approx(duration)
     for i, span in enumerate(spans):
         assert 0.0 <= span.start < span.end <= duration
-        assert span.duration <= 30.0 + 1e-9
+        assert span.duration <= (duration if duration <= 31.0 else 30.0) + 1e-9
         assert span.index == i
     for a, b in zip(spans, spans[1:]):
-        assert b.start < a.end          # overlap exists
+        assert b.start <= a.end         # no source audio is omitted
         assert a.end - b.start == pytest.approx(1.0, abs=1e-6)
 ```
 
-Add snapping tests: `test_boundary_snaps_to_nearest_quiet_point_within_window`, `test_boundary_outside_window_is_left_alone`, `test_snapping_preserves_strictly_increasing_starts`, and `test_snapping_does_not_push_a_start_past_the_end` (pass a quiet midpoint at `duration - 0.1` and assert no span starts beyond the duration).
+Add snapping tests: `test_boundary_snaps_to_nearest_quiet_point_within_window`, `test_boundary_outside_window_is_left_alone`, `test_snapping_preserves_strictly_increasing_starts`, a near-end point inside the 1.5-second search window, and an adversarial opposing-snap case proving continuous source coverage.
 
 - [ ] **Step 2: Run the tests to verify they fail**
 
@@ -511,11 +511,9 @@ Expected: FAIL — `ModuleNotFoundError: No module named 'audio_transcriber.chun
 Algorithm, in order:
 
 1. If `duration <= target + overlap`, return `[ChunkSpan(0, 0.0, duration)]`.
-2. Compute `stride = target - overlap` and `count = ceil((duration - target) / stride) + 1`.
-3. Build the nominal start list `[0.0] + [i * stride for i in range(1, count)]`.
-4. Snap each nominal start after the first to the closest entry in `quiet_midpoints` within `search_window` seconds; ties break toward the earlier midpoint. Clamp snapped values to stay strictly increasing and strictly below `duration`.
-5. Drop any start `>= duration - 0.05`.
-6. Build spans as `[ChunkSpan(i, start, min(start + target, duration))]`.
+2. Begin at zero. For each span choose `end = min(start + target, duration)` and, only when `end < duration`, snap that end to the nearest quiet midpoint within `search_window`; ties break toward the earlier midpoint. Do not snap beyond the target duration or allow a snap to prevent forward progress.
+3. Append the span. If its end is before the source duration, set the next start to `end - overlap` and repeat.
+4. Re-index spans in order. Deriving each start from the prior end guarantees gap-free coverage and approximately one-second overlap despite opposing quiet-point snaps.
 
 No randomness, no clock reads, no file access.
 
@@ -618,7 +616,7 @@ git commit -m "feat: assemble ordered transcripts with boundary-only deduplicati
 - Produces:
   - `WORKSPACE_PREFIX: str` (`"audio-transcriber-"`)
   - `class AudioWorkspace` — context manager with `__init__(self, root: Path | None = None)`, `.path: Path`, `.chunk_path(index: int) -> Path`, `.cleanup() -> None` (idempotent).
-  - `cleanup_stale_workspaces(root: Path | None = None) -> int` — removes leftover directories matching `WORKSPACE_PREFIX` under `tempfile.gettempdir()` (or `root`), returns the count removed.
+  - `cleanup_stale_workspaces(root: Path | None = None) -> int` — removes only app-owned workspace directories with valid metadata whose owner PID is demonstrably stale; returns the count removed.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -641,8 +639,13 @@ def test_cleanup_is_idempotent(tmp_path):
 def test_cleanup_stale_only_touches_our_prefix(tmp_path):
     keep = tmp_path / "someone-elses-data"; keep.mkdir()
     stale = tmp_path / (WORKSPACE_PREFIX + "old"); stale.mkdir()
+    write_owner(stale, pid=DEAD_PID)
     assert cleanup_stale_workspaces(tmp_path) == 1
     assert keep.is_dir() and not stale.exists()
+
+def test_cleanup_preserves_two_active_owners_and_permission_unknown_owner(tmp_path):
+    # Current process owns two live workspaces; an unknown PID state is preserved.
+    ...
 ```
 
 - [ ] **Step 2: Run the tests to verify they fail**
@@ -652,7 +655,7 @@ Expected: FAIL — `ModuleNotFoundError: No module named 'audio_transcriber.work
 
 - [ ] **Step 3: Implement `workdir.py`**
 
-`AudioWorkspace` uses `tempfile.mkdtemp(prefix=WORKSPACE_PREFIX, dir=root)` lazily on first `path`/`chunk_path` access, so constructing one that is never used leaves nothing behind. `cleanup()` uses `shutil.rmtree(path, ignore_errors=True)` and is safe to call twice. `cleanup_stale_workspaces` iterates `root.iterdir()`, matches `is_dir() and name.startswith(WORKSPACE_PREFIX)`, removes each, and never touches anything else.
+`AudioWorkspace` uses `tempfile.mkdtemp(prefix=WORKSPACE_PREFIX, dir=root)` lazily and writes an owner marker with application identity and PID. `cleanup()` remains idempotent. `cleanup_stale_workspaces` rejects symlinks and removes only matching directories with valid ownership metadata and a PID conclusively reported absent. Active, permission-denied, unknown, malformed, and unowned workspaces are preserved. Normal GUI startup calls cleanup before constructing the window.
 
 - [ ] **Step 4: Run the tests to verify they pass**
 
@@ -732,11 +735,11 @@ Expected: FAIL — `ModuleNotFoundError: No module named 'audio_transcriber.pipe
 
 - [ ] **Step 4: Implement `run` — the sequential preparation phase**
 
-In order: `callbacks.on_analyzing()`; `info = probe(source, ffprobe=...)` (propagates `NoAudioStreamError`, satisfying Review Focus item 1); `quiet = detect_quiet_midpoints(source, noise_db=constants.SILENCE_NOISE_DB, min_duration=constants.SILENCE_MIN_DURATION, ffmpeg=...)`; `spans = plan_chunks(info.duration, quiet)`; `callbacks.on_planned(len(spans))`. Chunk extraction happens lazily inside each worker, so a long file is not decoded twice up front.
+In order: `callbacks.on_analyzing()`; `info = probe(source, ffprobe=..., cancel_event=self._cancel_event)` (propagates `NoAudioStreamError`, satisfying Review Focus item 1); `quiet = detect_quiet_midpoints(..., cancel_event=self._cancel_event)`; `spans = plan_chunks(info.duration, quiet)`; `callbacks.on_planned(len(spans))`. Chunk extraction happens lazily inside each worker and receives the same cancellation event. FFmpeg children have finite deadlines and are terminated/reaped on cancel. Cancellation during preparation returns a cancelled report and still cleans the workspace.
 
 - [ ] **Step 5: Implement `run` — the concurrent phase**
 
-Submit every span to a `ThreadPoolExecutor(max_workers=constants.MAX_CONCURRENT_REQUESTS)`. Each worker: if the cancel event is set, return without extracting or requesting; otherwise extract the chunk into the workspace via `extract_chunk`, then call `client.transcribe`. Wrap the API call in the 429 retry loop:
+Submit every span to a `ThreadPoolExecutor(max_workers=constants.MAX_CONCURRENT_REQUESTS)`. Each worker: if the cancel event is set, return without extracting or requesting; otherwise extract the chunk into the workspace via `extract_chunk(..., cancel_event=self._cancel_event)`, then call `client.transcribe`. Wrap the API call in the 429 retry loop:
 
 - Catch `RateLimitError`. If attempts are exhausted (`constants.MAX_RATE_LIMIT_RETRIES`), record the failure and stop. Otherwise sleep `error.retry_after` when it is not `None`, else `RETRY_BASE_DELAY_SECONDS * 2 ** attempt`, re-checking the cancel event before sleeping and after.
 - Let every other `TranscriberError` propagate to the per-chunk handler immediately — no retry for `RequestTimeoutError`, `ProviderError`, or anything else (Review Focus item 5's negative case).
@@ -883,21 +886,22 @@ Expected: FAIL — `ModuleNotFoundError: No module named 'audio_transcriber.ui.m
 
 - [ ] **Step 4: Implement `MainWindow`**
 
-Layout, top to bottom: a read-only ZDR disclaimer label showing `constants.ZDR_WARNING` verbatim (this label is **never** hidden or conditioned on model availability — Review Focus for the "not contradicted by discovery" requirement); a file row with `browse_button` + `file_edit`; an options row with `model_combo` and `language_combo` (built from `constants.LANGUAGES`, first entry meaning auto-detect and mapped to `language=None`); an action row with `transcribe_button`, `cancel_button`, `retry_button`; `progress_bar`; `status_label`; `cost_label`; and `transcript_edit`.
+Layout, top to bottom: a read-only ZDR disclaimer label showing `constants.ZDR_WARNING` verbatim; a file row; an options row with `model_combo` and `language_combo` (display labels paired with ISO-639-1 item data; auto-detect stores `None`); an action row with `transcribe_button`, `cancel_button`, `retry_button`, and a reachable API-key settings control; `progress_bar`; `status_label`; `cost_label`; and `transcript_edit`.
 
 Behavior:
 - On construction, load the key from `CredentialStore`; if absent, open `KeyDialog` and cancel startup if the user does not provide one.
-- Call `client.list_available_models()` and populate `model_combo` from that list only. If the list is empty, raise `NoApprovedModelAvailable` into `status_label` and disable `transcribe_button`. Never insert a fallback entry.
+- Run `client.list_available_models()` asynchronously so a blocked request does not block window construction or UI events. Expose checking/error state and populate `model_combo` from that list only. If the list is empty, show `NoApprovedModelAvailable` and disable `transcribe_button`. Never insert a fallback entry.
+- Key settings can replace or forget the saved key. A changed/forgotten key clears the persisted ZDR acknowledgement and stale models; a replacement key triggers asynchronous rediscovery. Never display the key.
 - `transcribe_button` stays disabled until a file is chosen, a model is available, and `settings.zdr_acknowledged` is true. Acknowledgment is set from a checkbox in the disclaimer area and persisted.
 - On `finished`, set `progress_bar` to the total, populate `transcript_edit` from `report.transcript()`, set `cost_label` from `report.cost_note()`, and enable Copy / Save As. If `report.is_complete` is false, `status_label` states how many chunks failed and that the text is partial.
-- On `cancelled`, keep whatever text arrived, set `status_label` to note that cancellation may still have billed in-flight requests, and enable `retry_button` when `report.failures` is non-empty.
+- On `cancelled`, keep whatever text arrived, show the count of successfully completed chunks rather than setting progress to 100%, note that cancellation may still have billed in-flight requests, and enable `retry_button` when `report.failures` is non-empty.
 - Copy uses `QApplication.clipboard()`. Save As opens a `QFileDialog` for `*.txt` and writes UTF-8, refusing to overwrite without confirmation. Both act on the current transcript only.
 
 - [ ] **Step 5: Implement `app.py` and `__main__.py`**
 
 `app.py` exposes `build_application(argv: list[str]) -> QApplication` that sets `QT_ENABLE_HIGHDPI_SCALING`, the app name, and the organization, and sets `QT_QPA_PLATFORM=offscreen` **only** when an env var `AUDIO_TRANSCRIBER_HEADLESS=1` is present (so `--self-test` works headless without changing normal behavior).
 
-`__main__.py`'s `main(argv=None)` parses `--self-test` (delegating to `selftest.run_self_test()`), creates the app, shows `MainWindow`, and returns `app.exec()`.
+`__main__.py`'s `main(argv=None)` parses `--self-test` (delegating to `selftest.run_self_test()`), otherwise safely cleans demonstrably stale app-owned workspaces before creating the app, showing `MainWindow`, and returning `app.exec()`.
 
 - [ ] **Step 6: Run the tests to verify they pass**
 
@@ -1020,11 +1024,11 @@ Because `console=False` builds a windowed executable on Windows, `stdout` is not
 
 - [ ] **Step 4: Write `packaging/fetch_ffmpeg.py`**
 
-`fetch(dest_dir)` downloads `ffmpeg-master-latest-win64-gpl.zip` from the BtbN FFmpeg-Builds release, extracts `bin/ffmpeg.exe` and `bin/ffprobe.exe` into `dest_dir`, and returns their paths. If both files already exist, return them without downloading. Raise a `RuntimeError` with the URL in the message on failure. No checksum pinning in v1 — note this limitation in a comment rather than pretending it is verified.
+`fetch(dest_dir)` retains the approved unpinned BtbN `latest` GPL URL, extracts the binaries, and records the fetched archive SHA-256 for traceability only. It is not a pinned checksum and does not establish source correspondence. Release packaging must include the exact corresponding source, a written source offer, maintainer verification evidence, and notices or fail closed before writing a ZIP.
 
 - [ ] **Step 5: Write `packaging/build_release.py`**
 
-`build(version, output_dir, repo_root, runner=None)` invokes PyInstaller with the spec (default `runner` shells out with an argument list), then assembles `dist/AudioTranscriber/` into `AudioTranscriber-v<version>-win-x64.zip` under `output_dir` with the exact layout from the spec. `zip_contents` returns the sorted member names for tests. Never include anything matching `*.wav`, `*.m4a`, `*.mp3`, `.env`, or `*key*`; assert that in a test rather than trusting the glob.
+`build(version, output_dir, repo_root, runner=None)` rejects a version that differs from `audio_transcriber.__version__`, invokes PyInstaller with the spec, requires substantive license material for active direct/transitive package and PyInstaller bootloader distributions, and requires FFmpeg source/offer material whose manifest matches the currently fetched binary archive. Missing or mismatched material is a release blocker and prevents ZIP creation. The README refers to the latest Release rather than duplicating a version literal.
 
 - [ ] **Step 6: Run the tests to verify they pass**
 
@@ -1070,11 +1074,11 @@ Expected: prints only `exit=1` (no matches).
 
 - [ ] **Step 3: Write `README.md`**
 
-Sections, in order: what the app does; **Privacy and ZDR** (leading section — quote the ZDR warning verbatim and state the app cannot verify or enforce ZDR for transcription; explain the dedicated inference key plus a key-bound guardrail that enforces ZDR and sets a spend limit, and that an unassigned guardrail does nothing); Download and run (unzip `AudioTranscriber-v0.1.0-win-x64.zip`, run `AudioTranscriber.exe`, expect an unsigned-app SmartScreen warning); First run (enter the key); Selecting audio and transcribing; Saving and copying the transcript; **Cost** (state that chunking improves latency, not unit cost, that overlap adds slightly to billed audio, and that the displayed total is only what OpenRouter reports); Troubleshooting (401/402/403/429, SmartScreen, "no audio stream", incomplete transcripts, the explicit-retry warning that a retry may be billed again); Privacy details (no telemetry, temp WAVs cleaned on completion/cancellation/startup, nothing stored remotely, the app never modifies the original file).
+Sections cover app behavior, Privacy and ZDR, a version-independent latest-Release download instruction, the explicit FFmpeg source-compliance release blocker, first run, key replacement/forget settings, language code behavior, costs, troubleshooting, and privacy details.
 
 - [ ] **Step 4: Write `LICENSES/README.md`**
 
-Index the bundled third-party components and point at their license texts: FFmpeg/FFprobe (LGPL/GPL as built by the BtbN GPL build — state exactly which build is bundled and its license), PySide6 (LGPL v3), Qt (LGPL v3), httpx (BSD-3), keyring (MIT), and Python (PSF). Include a short "how to comply" note. Do not paste full license texts; link to them and copy the required notices into `LICENSES/` during packaging.
+Index the selected FFmpeg/FFprobe build and source-compliance blocker; PySide6, Qt, and Python; and the active direct/transitive package inventory generated from the Windows packaging environment (including PyInstaller and its bootloader). Copy substantive full texts/notices into the release ZIP and fail packaging if any required package license or exact FFmpeg source/offer material is missing. Do not claim legal compliance without source/provenance evidence.
 
 - [ ] **Step 5: Verify the README states the ZDR warning verbatim**
 

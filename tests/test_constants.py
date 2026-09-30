@@ -31,8 +31,10 @@ def test_transport_audio_and_retry_constants_are_pinned():
     assert constants.CANONICAL_FORMAT == "wav"
     assert constants.MAX_RATE_LIMIT_RETRIES == 3
     assert constants.RETRY_BASE_DELAY_SECONDS == 2.0
-    assert isinstance(constants.LANGUAGES, tuple)
-    assert constants.LANGUAGES
+    assert constants.LANGUAGES[0] == ("Auto-detect", None)
+    assert ("English", "en") in constants.LANGUAGES
+    assert ("Japanese", "ja") in constants.LANGUAGES
+    assert all(label and (code is None or len(code) == 2) for label, code in constants.LANGUAGES)
 
 
 def test_pipeline_silence_detection_settings_are_pinned():

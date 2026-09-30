@@ -20,20 +20,20 @@ CANONICAL_FORMAT = "wav"
 MAX_RATE_LIMIT_RETRIES = 3
 RETRY_BASE_DELAY_SECONDS = 2.0
 LANGUAGES = (
-    "Auto-detect",
-    "English",
-    "Spanish",
-    "French",
-    "German",
-    "Italian",
-    "Portuguese",
-    "Dutch",
-    "Japanese",
-    "Korean",
-    "Chinese",
-    "Russian",
-    "Arabic",
-    "Hindi",
+    ("Auto-detect", None),
+    ("English", "en"),
+    ("Spanish", "es"),
+    ("French", "fr"),
+    ("German", "de"),
+    ("Italian", "it"),
+    ("Portuguese", "pt"),
+    ("Dutch", "nl"),
+    ("Japanese", "ja"),
+    ("Korean", "ko"),
+    ("Chinese", "zh"),
+    ("Russian", "ru"),
+    ("Arabic", "ar"),
+    ("Hindi", "hi"),
 )
 
 MIN_BOUNDARY_DEDUP_TOKENS = 3

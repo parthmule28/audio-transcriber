@@ -144,13 +144,24 @@ class TranscriptionPipeline:
         report: TranscriptionReport
         try:
             self.callbacks.on_analyzing()
-            media = probe(self._source, ffprobe=self.ffprobe)
+            if self._cancel_event.is_set():
+                raise CancelledError()
+            media = probe(
+                self._source,
+                ffprobe=self.ffprobe,
+                cancel_event=self._cancel_event,
+            )
+            if self._cancel_event.is_set():
+                raise CancelledError()
             quiet = detect_quiet_midpoints(
                 self._source,
                 noise_db=constants.SILENCE_NOISE_DB,
                 min_duration=constants.SILENCE_MIN_DURATION,
                 ffmpeg=self.ffmpeg,
+                cancel_event=self._cancel_event,
             )
+            if self._cancel_event.is_set():
+                raise CancelledError()
             self._spans = tuple(plan_chunks(media.duration, quiet))
             self.callbacks.on_planned(len(self._spans))
             report = self._transcribe_spans(
@@ -158,6 +169,8 @@ class TranscriptionPipeline:
                 workspace=workspace,
                 total_chunks=len(self._spans),
             )
+        except CancelledError:
+            report = TranscriptionReport({}, {}, len(self._spans), cancelled=True)
         finally:
             workspace.cleanup()
 
@@ -289,6 +302,7 @@ class TranscriptionPipeline:
                 span.duration,
                 chunk_path,
                 ffmpeg=self.ffmpeg,
+                cancel_event=self._cancel_event,
             )
             if self._cancel_event.is_set():
                 return None, None

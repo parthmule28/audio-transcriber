@@ -26,6 +26,7 @@ class KeyDialog(QDialog):
     def __init__(self, store: CredentialStore, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._store = store
+        self.was_forgotten = False
         self.setWindowTitle("OpenRouter API key")
 
         layout = QVBoxLayout(self)
@@ -97,6 +98,7 @@ class KeyDialog(QDialog):
             return
 
         self._key_edit.clear()
+        self.was_forgotten = True
 
     def _clear_error(self) -> None:
         self._error_label.clear()

@@ -14,17 +14,19 @@ The app cannot inspect a key's guardrail assignment or verify ZDR. It does not e
 
 ## Download and run
 
-1. Download `AudioTranscriber-v0.1.0-win-x64.zip` from the repository's GitHub Releases page.
-2. Unzip the archive. Open the extracted `AudioTranscriber` folder and run `AudioTranscriber.exe`; keep the supporting files in that folder.
-3. The first release is unsigned. Windows SmartScreen may show an unknown-publisher warning. Confirm that you downloaded the archive from the project's Releases page before choosing **More info** and **Run anyway**.
+**Release blocker:** do not publish or redistribute a Windows ZIP until the exact source and required notices for the bundled FFmpeg/FFprobe build are established. The current unpinned BtbN `latest` GPL archive has a recorded digest but no corresponding source or written offer in this repository. The package builder rejects the release while this is unresolved; see [`LICENSES/FFMPEG-SOURCE-COMPLIANCE-BLOCKER.md`](LICENSES/FFMPEG-SOURCE-COMPLIANCE-BLOCKER.md). This project does not currently claim FFmpeg redistribution compliance.
+
+When a release is available, download the Windows x64 ZIP attached to the latest GitHub Release.
+1. Unzip the archive. Open the extracted `AudioTranscriber` folder and run `AudioTranscriber.exe`; keep the supporting files in that folder.
+2. The release is unsigned. Windows SmartScreen may show an unknown-publisher warning. Confirm that you downloaded the archive from the project's Releases page before choosing **More info** and **Run anyway**.
 
 ## First run
 
-Enter the dedicated OpenRouter inference key provided by the account owner. The key owner's account is billed for requests made with that key. Review and acknowledge the ZDR warning before transcribing. The key is saved in Windows Credential Manager; the app does not fall back to storing it in a plain-text file.
+Enter the dedicated OpenRouter inference key provided by the account owner. The key owner's account is billed for requests made with that key. Review and acknowledge the ZDR warning before transcribing. The key is saved in Windows Credential Manager; the app does not fall back to storing it in a plain-text file. Use **API key settings** to replace or forget the saved key; changing or forgetting it clears the previous ZDR acknowledgement and requires rediscovery for the new key.
 
 ## Selecting audio and transcribing
 
-Choose a supported audio file, select an available Whisper model and (optionally) a language, then start transcription. FFmpeg prepares the audio and the app processes it in overlapping chunks while showing progress. The default is Whisper Large V3 Turbo; Whisper Large V3 is the alternative. If neither approved model is available to the key, the app stops rather than silently switching to another model. A file with no readable audio track cannot be transcribed.
+Choose a supported audio file, select an available Whisper model and (optionally) a language, then start transcription. Language choices are sent as ISO-639-1 codes; automatic detection is the default. FFmpeg prepares the audio and the app processes it in overlapping chunks while showing progress. The default is Whisper Large V3 Turbo; Whisper Large V3 is the alternative. If neither approved model is available to the key, the app stops rather than silently switching to another model. A file with no readable audio track cannot be transcribed.
 
 ## Saving and copying the transcript
 

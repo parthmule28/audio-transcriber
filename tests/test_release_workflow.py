@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+from audio_transcriber import __version__
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -20,3 +21,10 @@ def test_workflow_requires_manual_version_and_preserves_tag_versioning():
     assert 'version="${GITHUB_REF_NAME#v}"' in workflow
     assert 'python packaging/build_release.py --version "$version"' in workflow
     assert "if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')" in workflow
+
+
+def test_readme_download_instructions_do_not_embed_a_drifting_version():
+    readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
+
+    assert f"AudioTranscriber-v{__version__}-win-x64.zip" not in readme
+    assert "latest GitHub Release" in readme

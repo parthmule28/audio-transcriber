@@ -17,17 +17,27 @@ sys.path.insert(0, str(REPO_ROOT / "packaging"))
 
 import build_release
 import fetch_ffmpeg
+from audio_transcriber import __version__
+
+
+def _full_text(title: str) -> bytes:
+    terms = "Permission is granted subject to the conditions and disclaimers below.\n"
+    return (title + "\n\n" + terms * 24 + "\nAll rights reserved.\n").encode()
 
 _RELEASE_LICENSES = {
     "BUILD-METADATA.txt": b"Collected package versions and provenance (fixture)\n",
-    "FFmpeg/LICENSE.txt": b"GNU GENERAL PUBLIC LICENSE Version 3 (fixture)\n",
+    "FFmpeg/LICENSE.txt": _full_text("GNU GENERAL PUBLIC LICENSE Version 3"),
     "FFmpeg/BUILD-METADATA.txt": b"BtbN archive metadata (fixture)\n",
-    "PySide6/LGPL-3.0-only.txt": b"GNU LESSER GENERAL PUBLIC LICENSE Version 3 (fixture)\n",
-    "PySide6/Qt-GPL-exception-1.0.txt": b"Qt GPL exception (fixture)\n",
-    "Qt/LGPL-3.0-only.txt": b"Qt LGPL Version 3 (fixture)\n",
-    "httpx/LICENSE.md": b"BSD 3-Clause License (fixture)\n",
-    "keyring/LICENSE": b"MIT License (fixture)\n",
-    "Python/LICENSE.txt": b"Python Software Foundation License (fixture)\n",
+    "FFmpeg/SOURCE-OFFER.md": _full_text("Written corresponding FFmpeg source offer"),
+    "FFmpeg/SOURCE-METADATA.txt": b"Binary/source archive digest metadata\n",
+    "FFmpeg/Source/ffmpeg-corresponding-source.tar.xz": b"source archive fixture",
+    "PySide6/LGPL-3.0-only.txt": _full_text("GNU LESSER GENERAL PUBLIC LICENSE Version 3"),
+    "PySide6/Qt-GPL-exception-1.0.txt": _full_text("Qt GPL exception"),
+    "Qt/LGPL-3.0-only.txt": _full_text("Qt LGPL Version 3"),
+    "httpx/LICENSE.md": _full_text("BSD 3-Clause License"),
+    "keyring/LICENSE": _full_text("MIT License"),
+    "Python/LICENSE.txt": _full_text("Python Software Foundation License"),
+    "Python-Packages.md": _full_text("Generated package inventory including PyInstaller bootloader"),
 }
 
 
@@ -74,16 +84,19 @@ def fake_pyinstaller_runner(argv, *, cwd):
 
 def test_zip_contains_expected_layout_and_name(tmp_path):
     zip_path = build_release.build(
-        "9.9.9", output_dir=tmp_path, repo_root=REPO_ROOT, runner=fake_pyinstaller_runner
+        __version__, output_dir=tmp_path, repo_root=REPO_ROOT, runner=fake_pyinstaller_runner
     )
 
-    assert zip_path == tmp_path / "AudioTranscriber-v9.9.9-win-x64.zip"
+    assert zip_path == tmp_path / f"AudioTranscriber-v{__version__}-win-x64.zip"
     names = build_release.zip_contents(zip_path)
     assert "AudioTranscriber/AudioTranscriber.exe" in names
     assert "AudioTranscriber/ffmpeg.exe" in names
     assert "AudioTranscriber/ffprobe.exe" in names
     assert "AudioTranscriber/LICENSES/README.md" in names
     assert "AudioTranscriber/LICENSES/THIRD-PARTY-NOTICES.md" in names
+    assert "AudioTranscriber/LICENSES/FFmpeg/SOURCE-OFFER.md" in names
+    assert "AudioTranscriber/LICENSES/FFmpeg/Source/ffmpeg-corresponding-source.tar.xz" in names
+    assert "AudioTranscriber/LICENSES/Python-Packages.md" in names
     with zipfile.ZipFile(zip_path) as archive:
         for relative_path, expected_content in _RELEASE_LICENSES.items():
             member = f"AudioTranscriber/LICENSES/{relative_path}"
@@ -105,7 +118,7 @@ def test_third_party_notice_names_all_bundled_components_and_says_texts_are_not_
 
 def test_zip_root_folder_is_named_for_the_app(tmp_path):
     zip_path = build_release.build(
-        "1.2.3", output_dir=tmp_path, repo_root=REPO_ROOT, runner=fake_pyinstaller_runner
+        __version__, output_dir=tmp_path, repo_root=REPO_ROOT, runner=fake_pyinstaller_runner
     )
 
     assert all(name.startswith("AudioTranscriber/") for name in build_release.zip_contents(zip_path))
@@ -113,7 +126,7 @@ def test_zip_root_folder_is_named_for_the_app(tmp_path):
 
 def test_zip_excludes_media_environment_and_key_files_except_keyring_license_material(tmp_path):
     zip_path = build_release.build(
-        "1.2.3", output_dir=tmp_path, repo_root=REPO_ROOT, runner=fake_pyinstaller_runner
+        __version__, output_dir=tmp_path, repo_root=REPO_ROOT, runner=fake_pyinstaller_runner
     )
 
     forbidden = (".wav", ".m4a", ".mp3", ".env")
@@ -127,6 +140,15 @@ def test_zip_excludes_media_environment_and_key_files_except_keyring_license_mat
         and not name.startswith("AudioTranscriber/LICENSES/keyring/")
     ]
     assert "AudioTranscriber/LICENSES/keyring/LICENSE" in names
+
+
+def test_build_rejects_tag_or_input_version_drift(tmp_path):
+    with pytest.raises(ValueError, match="package version"):
+        build_release.build(
+            "9.9.9", output_dir=tmp_path, repo_root=REPO_ROOT, runner=fake_pyinstaller_runner
+        )
+
+    assert not list(tmp_path.glob("AudioTranscriber-v*-win-x64.zip"))
 
 
 def _execute_spec(spec_text: str, packaging_dir: Path):
@@ -341,7 +363,7 @@ def test_default_build_runner_uses_argv_and_reports_missing_pyinstaller(tmp_path
     monkeypatch.setattr(build_release.subprocess, "run", missing_pyinstaller)
 
     with pytest.raises(RuntimeError, match="PyInstaller"):
-        build_release.build("1.2.3", output_dir=tmp_path, repo_root=REPO_ROOT)
+        build_release.build(__version__, output_dir=tmp_path, repo_root=REPO_ROOT)
 
     argv, cwd, check = calls[0]
     assert isinstance(argv, list)
@@ -416,7 +438,7 @@ def test_build_refuses_to_create_zip_when_required_license_material_is_missing(
 
     with pytest.raises(RuntimeError, match="license"):
         build_release.build(
-            "1.2.3", output_dir=tmp_path, repo_root=REPO_ROOT, runner=fake_pyinstaller_runner
+            __version__, output_dir=tmp_path, repo_root=REPO_ROOT, runner=fake_pyinstaller_runner
         )
 
     assert not (tmp_path / "AudioTranscriber-v1.2.3-win-x64.zip").exists()

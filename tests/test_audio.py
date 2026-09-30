@@ -2,18 +2,25 @@ import json
 import shutil
 import subprocess
 import sys
+import threading
 from pathlib import Path
 
 import pytest
 
 from audio_transcriber.audio import (
     MediaInfo,
+    _run_bounded_process,
     detect_quiet_midpoints,
     extract_chunk,
     probe,
     resolve_binary,
 )
-from audio_transcriber.errors import AudioPreparationError, FfmpegMissingError, NoAudioStreamError
+from audio_transcriber.errors import (
+    AudioPreparationError,
+    CancelledError,
+    FfmpegMissingError,
+    NoAudioStreamError,
+)
 
 
 @pytest.fixture
@@ -62,13 +69,32 @@ def test_extract_chunk_produces_canonical_wav(tmp_path, real_ffmpeg):
 def fake_process(monkeypatch, *, stdout="", stderr="", returncode=0):
     calls = []
 
-    def run(argv, *, capture_output, text, check):
-        assert isinstance(argv, list)
-        assert capture_output and text and check is False
-        calls.append(argv)
-        return subprocess.CompletedProcess(argv, returncode, stdout, stderr)
+    class FakeProcess:
+        def __init__(self, argv, *, stdout, stderr, text):
+            self.argv = argv
+            self.stdout = stdout
+            self.stderr = stderr
+            self.returncode = returncode
 
-    monkeypatch.setattr("audio_transcriber.audio.subprocess.run", run)
+        def communicate(self, timeout=None):
+            return stdout, stderr
+
+        def poll(self):
+            return self.returncode
+
+        def terminate(self):
+            self.returncode = -15
+
+        def kill(self):
+            self.returncode = -9
+
+    def popen(argv, *, stdout, stderr, text):
+        assert isinstance(argv, list)
+        assert stdout == subprocess.PIPE and stderr == subprocess.PIPE and text
+        calls.append(argv)
+        return FakeProcess(argv, stdout=stdout, stderr=stderr, text=text)
+
+    monkeypatch.setattr("audio_transcriber.audio.subprocess.Popen", popen)
     return calls
 
 
@@ -149,7 +175,10 @@ def test_detect_quiet_midpoints_returns_sorted_midpoints(monkeypatch):
         "[silencedetect] silence_start: 1.0\n"
         "[silencedetect] silence_end: 3.0 | silence_duration: 2.0\n"
     ))
-    monkeypatch.setattr("audio_transcriber.audio.probe", lambda source: MediaInfo(duration, True, "wav", None, None, None))
+    monkeypatch.setattr(
+        "audio_transcriber.audio.probe",
+        lambda source, **kwargs: MediaInfo(duration, True, "wav", None, None, None),
+    )
     result = detect_quiet_midpoints(Path("sample.wav"), noise_db=-35, min_duration=0.4,
                                     ffmpeg=Path("fake-ffmpeg"))
     assert result == [2.0, 8.0]
@@ -168,7 +197,10 @@ def test_detect_quiet_midpoints_bounds_completed_silences_to_media_duration(monk
         "[silencedetect] silence_start: 12.0\n"
         "[silencedetect] silence_end: 15.0 | silence_duration: 3.0\n"
     ))
-    monkeypatch.setattr("audio_transcriber.audio.probe", lambda source: MediaInfo(duration, True, "wav", None, None, None))
+    monkeypatch.setattr(
+        "audio_transcriber.audio.probe",
+        lambda source, **kwargs: MediaInfo(duration, True, "wav", None, None, None),
+    )
     result = detect_quiet_midpoints(Path("sample.wav"), noise_db=-35, min_duration=0.4,
                                     ffmpeg=Path("fake-ffmpeg"))
     assert result == [2.0, 9.0]
@@ -177,7 +209,10 @@ def test_detect_quiet_midpoints_bounds_completed_silences_to_media_duration(monk
 
 def test_detect_quiet_midpoints_closes_trailing_silence_at_duration(monkeypatch):
     fake_process(monkeypatch, stderr="[silencedetect] silence_start: 8.0\n")
-    monkeypatch.setattr("audio_transcriber.audio.probe", lambda source: MediaInfo(10.0, True, "wav", None, None, None))
+    monkeypatch.setattr(
+        "audio_transcriber.audio.probe",
+        lambda source, **kwargs: MediaInfo(10.0, True, "wav", None, None, None),
+    )
     assert detect_quiet_midpoints(Path("sample.wav"), noise_db=-30, min_duration=0.5,
                                   ffmpeg=Path("fake-ffmpeg")) == [9.0]
 
@@ -201,3 +236,71 @@ def test_extract_chunk_reports_failure_without_leaking_stderr(tmp_path, monkeypa
     assert calls == [["fake-ffmpeg", "-nostdin", "-hide_banner", "-y", "-ss", "2", "-t", "3",
                       "-i", str(source), "-vn", "-ac", "1", "-ar", "16000", "-c:a", "pcm_s16le",
                       "-f", "wav", str(tmp_path / "new" / "chunk.wav")]]
+
+
+def test_cancellable_process_terminates_and_reaps_child(tmp_path, monkeypatch):
+    child_pid = tmp_path / "child.pid"
+    cancel_event = threading.Event()
+    processes = []
+    real_popen = subprocess.Popen
+
+    def recording_popen(*args, **kwargs):
+        process = real_popen(*args, **kwargs)
+        processes.append(process)
+        return process
+
+    monkeypatch.setattr("audio_transcriber.audio.subprocess.Popen", recording_popen)
+    code = (
+        "from pathlib import Path; import os, sys, time; "
+        "Path(sys.argv[1]).write_text(str(os.getpid())); time.sleep(30)"
+    )
+    result = {}
+
+    def run_child():
+        try:
+            result["process"] = _run_bounded_process(
+                [sys.executable, "-c", code, str(child_pid)],
+                timeout=10,
+                cancel_event=cancel_event,
+            )
+        except BaseException as error:
+            result["error"] = error
+
+    thread = threading.Thread(target=run_child)
+    thread.start()
+    deadline = threading.Event()
+    for _ in range(100):
+        if child_pid.is_file():
+            break
+        deadline.wait(0.01)
+    assert child_pid.is_file()
+    cancel_event.set()
+    thread.join(timeout=3)
+
+    assert not thread.is_alive()
+    assert isinstance(result.get("error"), CancelledError)
+    assert len(processes) == 1 and processes[0].poll() is not None
+
+
+def test_process_timeout_terminates_and_reaps_child(tmp_path, monkeypatch):
+    child_pid = tmp_path / "timed-out-child.pid"
+    processes = []
+    real_popen = subprocess.Popen
+
+    def recording_popen(*args, **kwargs):
+        process = real_popen(*args, **kwargs)
+        processes.append(process)
+        return process
+
+    monkeypatch.setattr("audio_transcriber.audio.subprocess.Popen", recording_popen)
+    code = (
+        "from pathlib import Path; import os, sys, time; "
+        "Path(sys.argv[1]).write_text(str(os.getpid())); time.sleep(30)"
+    )
+    with pytest.raises(subprocess.TimeoutExpired):
+        _run_bounded_process(
+            [sys.executable, "-c", code, str(child_pid)], timeout=0.1
+        )
+
+    assert child_pid.is_file()
+    assert len(processes) == 1 and processes[0].poll() is not None

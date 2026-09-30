@@ -11,6 +11,7 @@ import pytest
 
 from audio_transcriber import constants, pipeline as pipeline_module
 from audio_transcriber.audio import (
+    FFMPEG_PROCESS_TIMEOUT_SECONDS,
     detect_quiet_midpoints,
     extract_chunk,
     probe,
@@ -62,14 +63,29 @@ def test_real_sample_runs_first_three_chunks_through_mocked_pipeline(
     chunk_hashes = {}
     real_extract_chunk = pipeline_module.extract_chunk
 
-    def extract_and_probe_chunk(media_path, start, duration, out_path, *, ffmpeg=None):
+    def extract_and_probe_chunk(
+        media_path,
+        start,
+        duration,
+        out_path,
+        *,
+        ffmpeg=None,
+        cancel_event=None,
+        timeout=FFMPEG_PROCESS_TIMEOUT_SECONDS,
+    ):
         index = int(Path(out_path).stem.removeprefix("chunk_"))
         assert 0 <= index < 3
         assert start == pytest.approx(spans[index].start)
         assert duration == pytest.approx(spans[index].duration)
 
         extracted = real_extract_chunk(
-            media_path, start, duration, out_path, ffmpeg=ffmpeg,
+            media_path,
+            start,
+            duration,
+            out_path,
+            ffmpeg=ffmpeg,
+            cancel_event=cancel_event,
+            timeout=timeout,
         )
         result = subprocess.run(
             [
