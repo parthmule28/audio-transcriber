@@ -207,3 +207,53 @@ Additional checks on the resumed tree:
 - `python packaging/fetch_ffmpeg.py --help` and `python packaging/build_release.py --help` both exited 0 and displayed their expected positional destination and required `--version` argument, respectively.
 - The workflow scan `grep -n -i -E 'sk-or|OPENROUTER_API_KEY|secrets\.' .github/workflows/release.yml` found no matches (exit 1, as expected).
 - `packaging/AudioTranscriber.spec` still includes the `LICENSES/` directory as PyInstaller data, and `git diff --check` exited 0 with no output.
+
+## Task 13 License-Material Review Fix — 2026-09-30
+
+### Fixes
+
+- Added `packaging/license_material.py`. Before ZIP creation, the packager stages the required component texts into the onedir `LICENSES/` directory and rejects missing or empty required files. It copies HTTPX and keyring license files from installed wheel metadata, copies any matching license/notice files available in PySide6/Qt wheels, and records the installed component versions and license sources in `BUILD-METADATA.txt`.
+- Where the Qt/PySide6 wheels do not provide the text files, the collector fetches LGPL-3.0 and the Qt GPL exception from upstream PySide/Qt source tags matching the installed PySide6 version. The Python PSF license is copied from the runtime when present or fetched from the matching CPython tag. Download errors include the required source URL and stop packaging.
+- Updated `packaging/fetch_ffmpeg.py` to require and extract the BtbN archive's top-level `LICENSE.txt` alongside both executables. It writes archive/source metadata and a SHA-256 digest for traceability only; the checksum and `latest` release remain unpinned as mandated by Task 12. Missing/empty archive license text is a fetch error.
+- The ZIP regression test now checks that the expected license files are present and non-empty. It also verifies that packaging fails before ZIP creation if required license material is missing. The archive fixture checks copying license text and build metadata; separate collector tests check wheel metadata reuse and the version-pinned Qt/PySide6/CPython fallbacks.
+- Preserved the existing `workflow_dispatch` version input and tag-derived version handling, as well as both script CLI entry points. The archive's existing `*key*` filter now permits only the `LICENSES/keyring/` path needed for the actual keyring license; key-like paths elsewhere remain excluded.
+
+### Verification
+
+Focused packaging, license-material, and workflow tests:
+
+```text
+PYTHONPATH=src QT_QPA_PLATFORM=offscreen uv run --no-project --with pytest --with pytest-qt --with pyside6 --with httpx --with keyring -- python -m pytest tests/test_build_release.py tests/test_license_material.py tests/test_release_workflow.py -q
+```
+
+```text
+.....................                                                    [100%]
+21 passed in 5.30s
+```
+
+Full test suite:
+
+```text
+PYTHONPATH=src QT_QPA_PLATFORM=offscreen uv run --no-project --with pytest --with pytest-qt --with pyside6 --with httpx --with keyring -- python -m pytest tests/ -q
+```
+
+```text
+........................................................................ [ 40%]
+........................................................................ [ 81%]
+.................................                                        [100%]
+177 passed in 5.55s
+```
+
+Additional checks:
+
+- `python packaging/fetch_ffmpeg.py --help && python packaging/build_release.py --help` exited 0 and displayed the expected destination and required `--version` arguments.
+- The workflow secret-pattern scan printed `exit=1` (no matches).
+- `python -m py_compile packaging/build_release.py packaging/fetch_ffmpeg.py packaging/license_material.py tests/test_build_release.py tests/test_license_material.py` exited 0 with no output.
+- `git diff --check` exited 0 with no output.
+- A collection check against the installed wheels populated non-empty HTTPX (1,508 bytes) and keyring (1,076 bytes) license files, and fetched the version-matched PySide6/Qt LGPL and exception texts when absent from those wheels.
+
+### Remaining concerns
+
+- The BtbN archive URL is still the plan-mandated unpinned `latest` URL. The archive digest is recorded for traceability only and is not compared against a pin. The archive provides its GPLv3 license text; any additional notices required by libraries linked into that exact FFmpeg build still need review before redistribution. This limitation is called out in the generated metadata and license index.
+- The version-tagged Qt/PySide6 and CPython source fallback requires network access when those texts are absent from the local wheel/runtime. Packaging fails clearly instead of producing the ZIP if that retrieval fails.
+- The complete Windows/PyInstaller release run was not performed in this Linux environment.

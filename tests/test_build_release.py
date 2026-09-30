@@ -3,6 +3,7 @@ from __future__ import annotations
 import ast
 import io
 import runpy
+import re
 import shutil
 import sys
 import subprocess
@@ -16,6 +17,35 @@ sys.path.insert(0, str(REPO_ROOT / "packaging"))
 
 import build_release
 import fetch_ffmpeg
+
+_RELEASE_LICENSES = {
+    "BUILD-METADATA.txt": b"Collected package versions and provenance (fixture)\n",
+    "FFmpeg/LICENSE.txt": b"GNU GENERAL PUBLIC LICENSE Version 3 (fixture)\n",
+    "FFmpeg/BUILD-METADATA.txt": b"BtbN archive metadata (fixture)\n",
+    "PySide6/LGPL-3.0-only.txt": b"GNU LESSER GENERAL PUBLIC LICENSE Version 3 (fixture)\n",
+    "PySide6/Qt-GPL-exception-1.0.txt": b"Qt GPL exception (fixture)\n",
+    "Qt/LGPL-3.0-only.txt": b"Qt LGPL Version 3 (fixture)\n",
+    "httpx/LICENSE.md": b"BSD 3-Clause License (fixture)\n",
+    "keyring/LICENSE": b"MIT License (fixture)\n",
+    "Python/LICENSE.txt": b"Python Software Foundation License (fixture)\n",
+}
+
+
+@pytest.fixture(autouse=True)
+def fake_release_license_material(monkeypatch):
+    def collect(destination, *, repo_root):
+        destination = Path(destination)
+        for relative_path, content in _RELEASE_LICENSES.items():
+            target = destination / relative_path
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(content)
+
+    monkeypatch.setattr(
+        build_release,
+        "collect_release_license_material",
+        collect,
+        raising=False,
+    )
 
 
 def fake_pyinstaller_runner(argv, *, cwd):
@@ -54,6 +84,12 @@ def test_zip_contains_expected_layout_and_name(tmp_path):
     assert "AudioTranscriber/ffprobe.exe" in names
     assert "AudioTranscriber/LICENSES/README.md" in names
     assert "AudioTranscriber/LICENSES/THIRD-PARTY-NOTICES.md" in names
+    with zipfile.ZipFile(zip_path) as archive:
+        for relative_path, expected_content in _RELEASE_LICENSES.items():
+            member = f"AudioTranscriber/LICENSES/{relative_path}"
+            assert member in names
+            assert archive.read(member) == expected_content
+            assert archive.getinfo(member).file_size > 0
     assert names == sorted(names)
 
 
@@ -75,7 +111,7 @@ def test_zip_root_folder_is_named_for_the_app(tmp_path):
     assert all(name.startswith("AudioTranscriber/") for name in build_release.zip_contents(zip_path))
 
 
-def test_zip_excludes_media_environment_and_key_files(tmp_path):
+def test_zip_excludes_media_environment_and_key_files_except_keyring_license_material(tmp_path):
     zip_path = build_release.build(
         "1.2.3", output_dir=tmp_path, repo_root=REPO_ROOT, runner=fake_pyinstaller_runner
     )
@@ -88,7 +124,9 @@ def test_zip_excludes_media_environment_and_key_files(tmp_path):
         name
         for name in names
         if any("key" in component.lower() for component in Path(name).parts)
+        and not name.startswith("AudioTranscriber/LICENSES/keyring/")
     ]
+    assert "AudioTranscriber/LICENSES/keyring/LICENSE" in names
 
 
 def _execute_spec(spec_text: str, packaging_dir: Path):
@@ -168,6 +206,10 @@ def _ffmpeg_archive() -> bytes:
     with zipfile.ZipFile(stream, "w") as archive:
         archive.writestr("ffmpeg-master-latest-win64-gpl/bin/ffmpeg.exe", b"ffmpeg-binary")
         archive.writestr("ffmpeg-master-latest-win64-gpl/bin/ffprobe.exe", b"ffprobe-binary")
+        archive.writestr(
+            "ffmpeg-master-latest-win64-gpl/LICENSE.txt",
+            b"GNU GENERAL PUBLIC LICENSE Version 3 (BtbN archive fixture)\n",
+        )
     return stream.getvalue()
 
 
@@ -178,6 +220,10 @@ def test_fetch_returns_existing_binaries_without_downloading(tmp_path, monkeypat
     ffprobe = binary_dir / "ffprobe.exe"
     ffmpeg.write_bytes(b"existing ffmpeg")
     ffprobe.write_bytes(b"existing ffprobe")
+    (binary_dir / fetch_ffmpeg.LICENSE_FILENAME).write_text("archive license", encoding="utf-8")
+    (binary_dir / fetch_ffmpeg.ARCHIVE_METADATA_FILENAME).write_text(
+        "archive metadata", encoding="utf-8"
+    )
 
     def unexpected_download(*args, **kwargs):
         raise AssertionError("existing binaries should not trigger a download")
@@ -186,7 +232,7 @@ def test_fetch_returns_existing_binaries_without_downloading(tmp_path, monkeypat
     assert fetch_ffmpeg.fetch(binary_dir) == (ffmpeg, ffprobe)
 
 
-def test_fetch_downloads_only_the_two_expected_binaries(tmp_path, monkeypatch):
+def test_fetch_downloads_binaries_and_license_material_from_archive(tmp_path, monkeypatch):
     archive_bytes = _ffmpeg_archive()
     monkeypatch.setattr(fetch_ffmpeg, "urlopen", lambda *args, **kwargs: io.BytesIO(archive_bytes))
 
@@ -194,7 +240,33 @@ def test_fetch_downloads_only_the_two_expected_binaries(tmp_path, monkeypatch):
 
     assert ffmpeg.read_bytes() == b"ffmpeg-binary"
     assert ffprobe.read_bytes() == b"ffprobe-binary"
-    assert sorted(path.name for path in ffmpeg.parent.iterdir()) == ["ffmpeg.exe", "ffprobe.exe"]
+    license_path = ffmpeg.parent / fetch_ffmpeg.LICENSE_FILENAME
+    metadata_path = ffmpeg.parent / fetch_ffmpeg.ARCHIVE_METADATA_FILENAME
+    assert license_path.read_bytes().startswith(b"GNU GENERAL PUBLIC LICENSE")
+    assert b"BtbN archive fixture" in license_path.read_bytes()
+    metadata = metadata_path.read_text(encoding="utf-8")
+    assert fetch_ffmpeg.FFMPEG_URL in metadata
+    assert "LICENSE.txt" in metadata
+    assert re.search(r"Archive SHA-256 .*?: [0-9a-f]{64}", metadata)
+    assert sorted(path.name for path in ffmpeg.parent.iterdir()) == sorted(
+        [
+            "ffmpeg.exe",
+            "ffprobe.exe",
+            fetch_ffmpeg.LICENSE_FILENAME,
+            fetch_ffmpeg.ARCHIVE_METADATA_FILENAME,
+        ]
+    )
+
+
+def test_fetch_fails_clearly_when_archive_has_no_license_text(tmp_path, monkeypatch):
+    stream = io.BytesIO()
+    with zipfile.ZipFile(stream, "w") as archive:
+        archive.writestr("ffmpeg-master-latest-win64-gpl/bin/ffmpeg.exe", b"ffmpeg")
+        archive.writestr("ffmpeg-master-latest-win64-gpl/bin/ffprobe.exe", b"ffprobe")
+    monkeypatch.setattr(fetch_ffmpeg, "urlopen", lambda *args, **kwargs: io.BytesIO(stream.getvalue()))
+
+    with pytest.raises(RuntimeError, match="LICENSE.txt"):
+        fetch_ffmpeg.fetch(tmp_path / "bin")
 
 
 def test_fetch_wraps_download_errors_with_the_source_url(tmp_path, monkeypatch):
@@ -306,3 +378,20 @@ def test_build_script_cli_rejects_unsafe_version():
 
     assert result.returncode != 0
     assert "version must contain only letters" in result.stderr
+
+
+def test_build_refuses_to_create_zip_when_required_license_material_is_missing(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(
+        build_release,
+        "collect_release_license_material",
+        lambda destination, *, repo_root: None,
+    )
+
+    with pytest.raises(RuntimeError, match="license"):
+        build_release.build(
+            "1.2.3", output_dir=tmp_path, repo_root=REPO_ROOT, runner=fake_pyinstaller_runner
+        )
+
+    assert not (tmp_path / "AudioTranscriber-v1.2.3-win-x64.zip").exists()

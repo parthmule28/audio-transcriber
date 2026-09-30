@@ -1,6 +1,6 @@
 # Third-party notices
 
-This file identifies third-party components included in the Windows application and summarizes their applicable licenses. It is a notice and source index, not a copy of any license text. **Full license texts are not included in this notice file.** Consult the linked upstream materials and include the exact applicable texts and any additional notices when redistributing the release.
+This file identifies third-party components included in the Windows application and summarizes their applicable licenses. It is an index, not a copy of any license text. **Full license texts are not included in this notice file.** The release builder places the required texts and notices in this `LICENSES/` directory and records their sources in `BUILD-METADATA.txt`; it refuses to create the ZIP if required material is missing or empty. Review the actual FFmpeg build for any additional external-library notices required for redistribution.
 
 ## FFmpeg and FFprobe
 

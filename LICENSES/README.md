@@ -1,18 +1,18 @@
 # Third-party software and licenses
 
-The Windows release bundles the components below. [`THIRD-PARTY-NOTICES.md`](THIRD-PARTY-NOTICES.md) is included in the application ZIP as a local notice summary. Follow the linked license texts and notices for the exact versions and binaries in each release.
+The Windows release bundles the components below. [`THIRD-PARTY-NOTICES.md`](THIRD-PARTY-NOTICES.md) is an index; the release packager copies the required license texts/notices from the installed wheels, Python runtime, and fetched FFmpeg archive into the ZIP's `LICENSES/` directory. The generated `BUILD-METADATA.txt` files record the source versions and archive material.
 
 | Component | Bundled component and applicable license | License text / notices |
 | --- | --- | --- |
-| FFmpeg and FFprobe | BtbN `ffmpeg-master-latest-win64-gpl.zip` — the Windows x64, static `gpl` variant fetched by `packaging/fetch_ffmpeg.py`. This is the GPL build, not the LGPL-only variant. BtbN's GPL build enables GPL and version-3 components, so FFmpeg is GPL v3; included external libraries may carry additional notices. | [BtbN FFmpeg-Builds](https://github.com/BtbN/FFmpeg-Builds), [FFmpeg license information](https://ffmpeg.org/legal.html), [GPL v3 text](https://github.com/FFmpeg/FFmpeg/blob/master/COPYING.GPLv3), [LGPL v2.1 text](https://github.com/FFmpeg/FFmpeg/blob/master/COPYING.LGPLv2.1) |
-| PySide6 | LGPL v3 | [Qt for Python license information](https://doc.qt.io/qtforpython-6/licenses.html) |
-| Qt | LGPL v3 for the Qt libraries distributed with this application | [Qt license information and texts](https://doc.qt.io/qt-6/licenses-used-in-qt.html) |
-| httpx | BSD 3-Clause | [httpx license](https://github.com/encode/httpx/blob/master/LICENSE.md) |
-| keyring | MIT | [keyring license](https://github.com/jaraco/keyring/blob/main/LICENSE) |
-| Python | Python Software Foundation (PSF) License | [Python license](https://docs.python.org/3/license.html) |
+| FFmpeg and FFprobe | BtbN `ffmpeg-master-latest-win64-gpl.zip` — the Windows x64, static `gpl` variant fetched by `packaging/fetch_ffmpeg.py`. This is the GPL build, not the LGPL-only variant. | `FFmpeg/LICENSE.txt` (copied from the fetched archive) and `FFmpeg/BUILD-METADATA.txt`; [BtbN FFmpeg-Builds](https://github.com/BtbN/FFmpeg-Builds), [FFmpeg license information](https://ffmpeg.org/legal.html) |
+| PySide6 | LGPL v3 with the Qt GPL exception text | `PySide6/LGPL-3.0-only.txt`, `PySide6/Qt-GPL-exception-1.0.txt`; [Qt for Python license information](https://doc.qt.io/qtforpython-6/licenses.html) |
+| Qt | LGPL v3 for the Qt libraries distributed with this application | `Qt/LGPL-3.0-only.txt`; [Qt license information and texts](https://doc.qt.io/qt-6/licenses-used-in-qt.html) |
+| httpx | BSD 3-Clause | `httpx/LICENSE.md`, copied from the installed wheel metadata; [httpx license](https://github.com/encode/httpx/blob/master/LICENSE.md) |
+| keyring | MIT | `keyring/LICENSE`, copied from the installed wheel metadata; [keyring license](https://github.com/jaraco/keyring/blob/main/LICENSE) |
+| Python | Python Software Foundation (PSF) License | `Python/LICENSE.txt`, copied from the Python runtime or its version-matched CPython source; [Python license](https://docs.python.org/3/license.html) |
 
 ## How to comply
 
-This repository includes the local notice summary but does not include the full license texts. Before redistribution, obtain and include the applicable full license texts and any additional notices required for the exact dependency versions and FFmpeg build. The PyInstaller spec bundles files in this directory with the application. Keep notices with redistributed copies, observe the applicable GPL and LGPL source and redistribution requirements, and check the actual build's configuration and included-library notices; this index is not legal advice.
+The source tree keeps this index concise; `packaging/build_release.py` stages the required full texts/notices into the application ZIP and fails before writing the ZIP if required material is absent or empty. The builder reuses license files from installed wheel metadata and the BtbN archive, and uses version-tagged upstream Qt/PySide6 and CPython license sources only when the corresponding installed files are unavailable. Keep all notices with redistributed copies and observe the applicable GPL and LGPL source and redistribution requirements. The BtbN `latest` URL remains unpinned as required by the packaging plan; review the actual FFmpeg build and any additional linked-library notices before redistribution. This index is not legal advice.
 
-The index and local notice summary point to upstream license materials and do not reproduce their full texts.
+The index points to the release ZIP's copied license materials and upstream sources; full license texts are not pasted into this README.

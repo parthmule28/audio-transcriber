@@ -12,6 +12,8 @@ import zipfile
 from collections.abc import Callable, Sequence
 from pathlib import Path
 
+from license_material import collect_release_license_material, validate_release_license_material
+
 
 _VERSION_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9.+-]*\Z")
 _EXCLUDED_AUDIO_SUFFIXES = {".wav", ".m4a", ".mp3"}
@@ -22,9 +24,14 @@ def _default_runner(argv: Sequence[str], *, cwd: Path) -> None:
 
 
 def _is_excluded(relative_path: Path) -> bool:
+    is_license_material = (
+        bool(relative_path.parts) and relative_path.parts[0].casefold() == "licenses"
+    )
     for part in relative_path.parts:
         folded = part.casefold()
-        if "key" in folded or folded == ".env" or folded.startswith(".env."):
+        if "key" in folded and not (is_license_material and folded == "keyring"):
+            return True
+        if folded == ".env" or folded.startswith(".env."):
             return True
         if Path(part).suffix.casefold() in _EXCLUDED_AUDIO_SUFFIXES:
             return True
@@ -93,6 +100,10 @@ def build(
             raise RuntimeError(f"PyInstaller did not produce the onedir distribution: {distribution}")
         if not (distribution / "AudioTranscriber.exe").is_file():
             raise RuntimeError(f"PyInstaller output is missing AudioTranscriber.exe: {distribution}")
+
+        license_dir = distribution / "LICENSES"
+        collect_release_license_material(license_dir, repo_root=repo_root)
+        validate_release_license_material(license_dir)
 
         temp_archive = None
         try:
