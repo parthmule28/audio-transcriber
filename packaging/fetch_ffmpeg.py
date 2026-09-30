@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import argparse
 import os
 import shutil
+import sys
 import tempfile
 import zipfile
+from collections.abc import Sequence
 from pathlib import Path, PurePosixPath
 from urllib.request import urlopen
 
@@ -65,3 +68,24 @@ def fetch(dest_dir: Path) -> tuple[Path, Path]:
         raise RuntimeError(f"Failed to fetch FFmpeg binaries from {FFMPEG_URL}: {exc}") from exc
 
     return destinations
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    """Fetch FFmpeg binaries into the directory supplied on the command line."""
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("destination", help="directory in which to place ffmpeg.exe and ffprobe.exe")
+    args = parser.parse_args(argv)
+
+    try:
+        if argv is None:
+            fetch(Path(sys.argv[1]))
+        else:
+            fetch(Path(args.destination))
+    except Exception as exc:
+        print(f"Failed to fetch FFmpeg binaries: {exc}", file=sys.stderr)
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

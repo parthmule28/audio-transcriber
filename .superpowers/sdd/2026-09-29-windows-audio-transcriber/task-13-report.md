@@ -90,3 +90,120 @@ Output:
 3. **FFmpeg artifact is mutable:** the existing fetcher uses BtbN's floating `latest` Windows GPL archive and does not pin a revision or checksum. The index identifies the exact archive variant and GPL v3 build, but the binary version can change between releases.
 4. No actual Windows packaging run, SmartScreen launch, or live FFmpeg download was performed in this Linux environment.
 5. Git used the machine's automatically configured committer identity and printed a warning; no global Git identity settings were changed.
+
+## Task 13 Review-Fix Addendum — 2026-09-30
+
+### Fixes
+
+- Added an `argparse` CLI to `packaging/fetch_ffmpeg.py`. The command accepts one destination argument and, when run as a script, calls `fetch(Path(sys.argv[1]))`; fetch errors return status 1.
+- Added an `argparse` CLI to `packaging/build_release.py`. It requires `--version VERSION`, calls `build(version, output_dir=repo_root / "dist", repo_root=repo_root)`, prints the output archive on success, and returns status 1 with an error on build failure. The existing version pattern rejects unsafe values before creating output, and the CLI rejects a leading `v` to prevent a doubled archive prefix.
+- Added a required string `workflow_dispatch` version input. Manual runs pass the input through an environment variable; tag pushes still strip the leading `v` from `GITHUB_REF_NAME`. Both routes call the validated build CLI, and GitHub Releases remain limited to `v*` tag pushes.
+- Added `LICENSES/THIRD-PARTY-NOTICES.md` naming the BtbN FFmpeg/FFprobe GPL v3 build, PySide6/Qt LGPL v3, httpx BSD 3-Clause, keyring MIT, and Python PSF license, with upstream links. It explicitly says full license texts are not included in the notice. `LICENSES/README.md` now makes the same distinction. The existing PyInstaller spec bundles the `LICENSES/` directory, and the packaging test now verifies the notice file is present in the generated ZIP fixture.
+- Added CLI, invalid-version, workflow input/tag behavior, and license-notice-in-ZIP regression tests.
+
+### Verification
+
+The focused packaging and workflow-doc tests were first run before the fixes and reproduced the findings:
+
+```text
+7 failed, 8 passed in 0.29s
+```
+
+After the fixes:
+
+```text
+PYTHONPATH=src QT_QPA_PLATFORM=offscreen uv run --no-project --with pytest --with pytest-qt --with pyside6 --with httpx --with keyring -- python -m pytest tests/test_build_release.py tests/test_release_workflow.py -q
+```
+
+```text
+................                                                         [100%]
+16 passed in 0.16s
+```
+
+Full suite:
+
+```text
+PYTHONPATH=src QT_QPA_PLATFORM=offscreen uv run --no-project --with pytest --with pytest-qt --with pyside6 --with httpx --with keyring -- python -m pytest tests/ -q
+```
+
+```text
+........................................................................ [ 41%]
+........................................................................ [ 83%]
+............................                                             [100%]
+172 passed in 1.27s
+```
+
+CLI help smoke checks:
+
+```text
+python packaging/fetch_ffmpeg.py --help
+usage: fetch_ffmpeg.py [-h] destination
+
+Fetch the Windows FFmpeg tools used by the release bundle.
+
+positional arguments:
+  destination  directory in which to place ffmpeg.exe and ffprobe.exe
+
+options:
+  -h, --help   show this help message and exit
+```
+
+```text
+python packaging/build_release.py --help
+usage: build_release.py [-h] --version VERSION
+
+Build and archive the Windows onedir application distribution.
+
+options:
+  -h, --help         show this help message and exit
+  --version VERSION  release version without the leading 'v' (for example,
+                     0.1.0)
+```
+
+The required workflow scan still returned the expected no-match status:
+
+```text
+grep -n -i -E "sk-or|OPENROUTER_API_KEY|secrets\." .github/workflows/release.yml; echo "exit=$?"
+exit=1
+```
+
+The README warning check printed `verbatim present` using:
+
+```text
+PYTHONPATH=src python -c "from pathlib import Path; from audio_transcriber.constants import ZDR_WARNING; t=Path('README.md').read_text(); print('verbatim present' if ZDR_WARNING in t else 'MISSING')"
+```
+
+### Remaining concerns
+
+- The bundled `THIRD-PARTY-NOTICES.md` is a notice summary, not a full license-text collection. Full texts and additional notices required for the exact bundled dependency versions and the floating BtbN FFmpeg build still need to be included before redistribution.
+- The release workflow and PyInstaller data collection were verified with regression tests, but not executed on a Windows runner; no live FFmpeg download or signed/SmartScreen release test was performed.
+
+### Resume verification — 2026-09-30
+
+The focused tests and full suite were rerun from the resumed working tree:
+
+```text
+PYTHONPATH=src QT_QPA_PLATFORM=offscreen uv run --no-project --with pytest --with pytest-qt --with pyside6 --with httpx --with keyring -- python -m pytest tests/test_build_release.py tests/test_release_workflow.py -q
+```
+
+```text
+................                                                         [100%]
+16 passed in 0.18s
+```
+
+```text
+PYTHONPATH=src QT_QPA_PLATFORM=offscreen uv run --no-project --with pytest --with pytest-qt --with pyside6 --with httpx --with keyring -- python -m pytest tests/ -q
+```
+
+```text
+........................................................................ [ 41%]
+........................................................................ [ 83%]
+............................                                             [100%]
+172 passed in 1.39s
+```
+
+Additional checks on the resumed tree:
+
+- `python packaging/fetch_ffmpeg.py --help` and `python packaging/build_release.py --help` both exited 0 and displayed their expected positional destination and required `--version` argument, respectively.
+- The workflow scan `grep -n -i -E 'sk-or|OPENROUTER_API_KEY|secrets\.' .github/workflows/release.yml` found no matches (exit 1, as expected).
+- `packaging/AudioTranscriber.spec` still includes the `LICENSES/` directory as PyInstaller data, and `git diff --check` exited 0 with no output.

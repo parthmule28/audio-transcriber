@@ -1,6 +1,6 @@
 # Third-party software and licenses
 
-The Windows release bundles the components below. Follow the linked license texts and notices for the exact versions and binaries included in each release.
+The Windows release bundles the components below. [`THIRD-PARTY-NOTICES.md`](THIRD-PARTY-NOTICES.md) is included in the application ZIP as a local notice summary. Follow the linked license texts and notices for the exact versions and binaries in each release.
 
 | Component | Bundled component and applicable license | License text / notices |
 | --- | --- | --- |
@@ -13,6 +13,6 @@ The Windows release bundles the components below. Follow the linked license text
 
 ## How to comply
 
-Before packaging a release, copy the applicable full license texts, copyright notices, and other required notices for the exact dependency and FFmpeg builds into this `LICENSES/` directory. The PyInstaller spec bundles this directory with the application. Keep the notices with redistributed copies, observe the applicable GPL and LGPL source and redistribution requirements, and check the actual build's configuration and included-library notices; this index is not legal advice.
+This repository includes the local notice summary but does not include the full license texts. Before redistribution, obtain and include the applicable full license texts and any additional notices required for the exact dependency versions and FFmpeg build. The PyInstaller spec bundles files in this directory with the application. Keep notices with redistributed copies, observe the applicable GPL and LGPL source and redistribution requirements, and check the actual build's configuration and included-library notices; this index is not legal advice.
 
-This index points to upstream license materials and does not reproduce their full texts.
+The index and local notice summary point to upstream license materials and do not reproduce their full texts.

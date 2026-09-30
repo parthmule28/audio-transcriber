@@ -5,6 +5,11 @@ on:
     tags:
       - "v*"
   workflow_dispatch:
+    inputs:
+      version:
+        description: "Release version without the leading v (for example, 0.1.0)"
+        required: true
+        type: string
 
 jobs:
   release:
@@ -29,8 +34,16 @@ jobs:
         run: python packaging/fetch_ffmpeg.py packaging/bin
 
       - name: Build release archive
+        env:
+          RELEASE_VERSION: ${{ inputs.version }}
         shell: bash
-        run: python packaging/build_release.py --version "${GITHUB_REF_NAME#v}"
+        run: |
+          if [[ "$GITHUB_EVENT_NAME" == "workflow_dispatch" ]]; then
+            version="$RELEASE_VERSION"
+          else
+            version="${GITHUB_REF_NAME#v}"
+          fi
+          python packaging/build_release.py --version "$version"
 
       - name: Self-test packaged application
         run: |

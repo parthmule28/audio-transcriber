@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import argparse
 import os
 import re
 import subprocess
@@ -113,3 +114,32 @@ def zip_contents(zip_path: Path) -> list[str]:
     """Return archive member names sorted for stable tests and inspection."""
     with zipfile.ZipFile(zip_path) as archive:
         return sorted(archive.namelist())
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    """Build the release ZIP using argv-safe command-line parsing."""
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--version",
+        required=True,
+        help="release version without the leading 'v' (for example, 0.1.0)",
+    )
+    args = parser.parse_args(argv)
+    if args.version[:1].casefold() == "v":
+        print("Failed to build release: omit the leading 'v' from the version", file=sys.stderr)
+        return 1
+
+    repo_root = Path(__file__).resolve().parents[1]
+
+    try:
+        archive = build(args.version, output_dir=repo_root / "dist", repo_root=repo_root)
+    except Exception as exc:
+        print(f"Failed to build release: {exc}", file=sys.stderr)
+        return 1
+
+    print(archive)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -3,7 +3,9 @@ from __future__ import annotations
 import ast
 import io
 import runpy
+import shutil
 import sys
+import subprocess
 import zipfile
 from pathlib import Path
 
@@ -23,10 +25,10 @@ def fake_pyinstaller_runner(argv, *, cwd):
     app_dir = dist_path / "AudioTranscriber"
     licenses_dir = app_dir / "LICENSES"
     licenses_dir.mkdir(parents=True)
+    shutil.copytree(REPO_ROOT / "LICENSES", licenses_dir, dirs_exist_ok=True)
     (app_dir / "AudioTranscriber.exe").write_bytes(b"app")
     (app_dir / "ffmpeg.exe").write_bytes(b"ffmpeg")
     (app_dir / "ffprobe.exe").write_bytes(b"ffprobe")
-    (licenses_dir / "README.md").write_text("Third-party notices", encoding="utf-8")
 
     # A build directory may contain project or developer data; the release ZIP must not.
     (app_dir / "sample.wav").write_bytes(b"audio")
@@ -51,7 +53,18 @@ def test_zip_contains_expected_layout_and_name(tmp_path):
     assert "AudioTranscriber/ffmpeg.exe" in names
     assert "AudioTranscriber/ffprobe.exe" in names
     assert "AudioTranscriber/LICENSES/README.md" in names
+    assert "AudioTranscriber/LICENSES/THIRD-PARTY-NOTICES.md" in names
     assert names == sorted(names)
+
+
+def test_third_party_notice_names_all_bundled_components_and_says_texts_are_not_included():
+    notices = (REPO_ROOT / "LICENSES" / "THIRD-PARTY-NOTICES.md").read_text(encoding="utf-8")
+
+    for component in ("FFmpeg and FFprobe", "PySide6", "Qt", "httpx", "keyring", "Python"):
+        assert component in notices
+    for license_name in ("GPL v3", "LGPL v3", "BSD 3-Clause", "MIT", "PSF"):
+        assert license_name in notices
+    assert "Full license texts are not included" in notices
 
 
 def test_zip_root_folder_is_named_for_the_app(tmp_path):
@@ -194,6 +207,33 @@ def test_fetch_wraps_download_errors_with_the_source_url(tmp_path, monkeypatch):
         fetch_ffmpeg.fetch(tmp_path / "bin")
 
 
+def test_fetch_cli_passes_the_destination_argument_as_a_path(monkeypatch, tmp_path):
+    calls = []
+    destination = tmp_path / "ffmpeg bin"
+    monkeypatch.setattr(fetch_ffmpeg, "fetch", lambda path: calls.append(path))
+
+    assert fetch_ffmpeg.main([str(destination)]) == 0
+
+    assert calls == [destination]
+
+
+def test_fetch_script_cli_accepts_destination_and_uses_existing_binaries(tmp_path):
+    binary_dir = tmp_path / "ffmpeg bin"
+    binary_dir.mkdir()
+    (binary_dir / "ffmpeg.exe").write_bytes(b"ffmpeg")
+    (binary_dir / "ffprobe.exe").write_bytes(b"ffprobe")
+
+    result = subprocess.run(
+        [sys.executable, str(REPO_ROOT / "packaging" / "fetch_ffmpeg.py"), str(binary_dir)],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+
+
 def test_default_build_runner_uses_argv_and_reports_missing_pyinstaller(tmp_path, monkeypatch):
     calls = []
 
@@ -211,3 +251,58 @@ def test_default_build_runner_uses_argv_and_reports_missing_pyinstaller(tmp_path
     assert "-m" in argv and "PyInstaller" in argv
     assert cwd == REPO_ROOT
     assert check is True
+
+
+def test_build_cli_passes_version_repo_root_and_dist_directory(monkeypatch, tmp_path, capsys):
+    archive = tmp_path / "AudioTranscriber-v1.2.3-win-x64.zip"
+    calls = []
+
+    def fake_build(version, *, output_dir, repo_root):
+        calls.append((version, output_dir, repo_root))
+        return archive
+
+    monkeypatch.setattr(build_release, "build", fake_build)
+
+    assert build_release.main(["--version", "1.2.3"]) == 0
+
+    expected_root = REPO_ROOT.resolve()
+    assert calls == [("1.2.3", expected_root / "dist", expected_root)]
+    assert capsys.readouterr().out.strip() == str(archive)
+
+
+def test_build_cli_returns_nonzero_and_reports_build_errors(monkeypatch, capsys):
+    def failed_build(*args, **kwargs):
+        raise RuntimeError("packaging failed")
+
+    monkeypatch.setattr(build_release, "build", failed_build)
+
+    assert build_release.main(["--version", "1.2.3"]) == 1
+    assert "packaging failed" in capsys.readouterr().err
+
+
+def test_build_cli_rejects_a_leading_v_before_calling_build(monkeypatch, capsys):
+    calls = []
+    monkeypatch.setattr(build_release, "build", lambda *args, **kwargs: calls.append(args))
+
+    assert build_release.main(["--version", "v1.2.3"]) == 1
+
+    assert calls == []
+    assert "omit the leading 'v'" in capsys.readouterr().err
+
+
+def test_build_script_cli_rejects_unsafe_version():
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(REPO_ROOT / "packaging" / "build_release.py"),
+            "--version",
+            "../unsafe",
+        ],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode != 0
+    assert "version must contain only letters" in result.stderr
