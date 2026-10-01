@@ -5,10 +5,14 @@ packaging_dir = Path(SPECPATH)
 repo_root = packaging_dir.parent
 
 datas = []
+binaries = []
 for binary_name in ("ffmpeg.exe", "ffprobe.exe"):
     binary_path = packaging_dir / "bin" / binary_name
     if binary_path.is_file():
-        datas.append((str(binary_path), "."))
+        binaries.append((str(binary_path), "."))
+for binary_path in sorted((packaging_dir / "bin").glob("*.dll")):
+    if binary_path.is_file():
+        binaries.append((str(binary_path), "."))
 
 licenses_path = repo_root / "LICENSES"
 if licenses_path.is_dir():
@@ -32,7 +36,7 @@ excluded_modules = [
 a = Analysis(
     [str(repo_root / "src" / "audio_transcriber" / "__main__.py")],
     pathex=[str(repo_root / "src")],
-    binaries=[],
+    binaries=binaries,
     datas=datas,
     # selftest is loaded by importlib from __main__, so PyInstaller cannot infer it.
     hiddenimports=["audio_transcriber.selftest"],

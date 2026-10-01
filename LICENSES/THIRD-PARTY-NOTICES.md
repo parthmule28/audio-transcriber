@@ -1,12 +1,12 @@
 # Third-party notices
 
-This file identifies third-party components intended for the Windows application and summarizes their licenses. It is an index, not a copy of any license text. **Full license texts are not included in this notice file.** The release builder places full texts/notices in this `LICENSES/` directory and records their sources in `BUILD-METADATA.txt`. It fails closed if material is missing or insubstantial. Review the actual FFmpeg build for every external-library notice required for redistribution.
+This file identifies third-party components intended for the Windows application and summarizes their licenses. It is an index, not a copy of any license text. **Full license texts and FFmpeg source/build materials are included in the Windows ZIP** under `LICENSES/`; `BUILD-METADATA.txt` records their provenance. Review the actual FFmpeg build and all toolchain dependencies before redistribution. This notice is not a legal opinion.
 
 ## FFmpeg and FFprobe
 
-The application bundles `ffmpeg.exe` and `ffprobe.exe` from BtbN's Windows x64 static GPL archive, `ffmpeg-master-latest-win64-gpl.zip`, fetched from [BtbN/FFmpeg-Builds](https://github.com/BtbN/FFmpeg-Builds). This GPL build enables GPL and version-3 components; FFmpeg is distributed under GPL v3 in this build. Other libraries compiled into the FFmpeg binaries may carry separate copyright and license notices. See [FFmpeg license information](https://ffmpeg.org/legal.html), the [GPL v3 text](https://github.com/FFmpeg/FFmpeg/blob/master/COPYING.GPLv3), and the [LGPL v2.1 text](https://github.com/FFmpeg/FFmpeg/blob/master/COPYING.LGPLv2.1).
+The application bundles `ffmpeg.exe`, `ffprobe.exe`, and replaceable shared FFmpeg DLLs built from the pinned official FFmpeg 9.0.2 source archive. The build configuration disables GPL, version-3-only, nonfree, autodetection, and network features and enables only the local file protocol and the reviewed demuxer/decoder/filter/encoder/muxer set. The release build checks the FFmpeg license banner and records hashes for both executables and every FFmpeg DLL.
 
-**Release blocker:** the archive download currently supplies no exact corresponding source archive or written source offer in this repository. Its unpinned URL and recorded SHA-256 are not evidence of source correspondence. Release ZIP creation and publishing fail until a maintainer establishes and supplies the exact source, matching binary/source hashes, and offer described in [`FFMPEG-SOURCE-COMPLIANCE-BLOCKER.md`](FFMPEG-SOURCE-COMPLIANCE-BLOCKER.md). No compliance claim is made.
+The ZIP includes the exact `ffmpeg-9.0.2.tar.xz` source archive, its detached signature, the release public key, the LGPL v2.1 license text (`COPYING.LGPLv2.1`), the UCRT64 build and fetch scripts, a source offer, generated build metadata, and GCC runtime license material. See [FFmpeg license information](https://ffmpeg.org/legal.html). The source archive contains upstream project files with their respective notices; the build metadata identifies the configuration used for the bundled runtime. No legal-compliance guarantee is made.
 
 ## PySide6 and Qt
 

@@ -14,7 +14,11 @@ The app cannot inspect a key's guardrail assignment or verify ZDR. It does not e
 
 ## Download and run
 
-**Release blocker:** do not publish or redistribute a Windows ZIP until the exact source and required notices for the bundled FFmpeg/FFprobe build are established. The current unpinned BtbN `latest` GPL archive has a recorded digest but no corresponding source or written offer in this repository. The package builder rejects the release while this is unresolved; see [`LICENSES/FFMPEG-SOURCE-COMPLIANCE-BLOCKER.md`](LICENSES/FFMPEG-SOURCE-COMPLIANCE-BLOCKER.md). This project does not currently claim FFmpeg redistribution compliance.
+### Windows test build
+
+To try a candidate Windows build, open **Actions → Windows release → Run workflow**, select the feature branch, and enter version `0.1.0`. A successful manual run uploads the `AudioTranscriber-windows-test` artifact for download from that Actions run. **A manual run does not create a GitHub Release.** The existing version-tag workflow remains the only path that publishes a GitHub Release.
+
+The candidate build compiles FFmpeg 9.0.2 from the pinned official source archive (`https://ffmpeg.org/releases/ffmpeg-9.0.2.tar.xz`, SHA-256 `8c3850283eb25fa026482078a04051e0be17347b09ef81a0849bec15a96e002e`) and verifies its detached signature against release-key fingerprint `FCF986EA15E6E293A5644F10B4322F04D67658D8`. Its Windows ZIP contains the source, signature, key, LGPL license text, build recipe, toolchain notices, and generated provenance. The build disables GPL, version-3-only, nonfree, autodetection, and network features. Workflow validation is still required before treating a candidate artifact as tested; see [`LICENSES/FFMPEG-SOURCE-COMPLIANCE-BLOCKER.md`](LICENSES/FFMPEG-SOURCE-COMPLIANCE-BLOCKER.md).
 
 When a release is available, download the Windows x64 ZIP attached to the latest GitHub Release.
 1. Unzip the archive. Open the extracted `AudioTranscriber` folder and run `AudioTranscriber.exe`; keep the supporting files in that folder.

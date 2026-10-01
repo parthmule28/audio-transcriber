@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import ast
+import hashlib
 import io
 import runpy
 import re
 import shutil
 import sys
 import subprocess
+import tarfile
 import zipfile
 from pathlib import Path
 
@@ -16,7 +18,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT / "packaging"))
 
 import build_release
-import fetch_ffmpeg
+import license_material
 from audio_transcriber import __version__
 
 
@@ -24,13 +26,80 @@ def _full_text(title: str) -> bytes:
     terms = "Permission is granted subject to the conditions and disclaimers below.\n"
     return (title + "\n\n" + terms * 24 + "\nAll rights reserved.\n").encode()
 
+
+def _source_archive_bytes() -> bytes:
+    stream = io.BytesIO()
+    license_content = _full_text("GNU LESSER GENERAL PUBLIC LICENSE\nVersion 2.1")
+    with tarfile.open(fileobj=stream, mode="w:xz", format=tarfile.USTAR_FORMAT) as archive:
+        for name, content in (
+            ("ffmpeg-9.0.2/configure", b"#!/bin/sh\n"),
+            ("ffmpeg-9.0.2/COPYING.LGPLv2.1", license_content),
+            ("ffmpeg-9.0.2/libavcodec/codec.c", b"int codec_fixture(void) { return 0; }\n"),
+        ):
+            info = tarfile.TarInfo(name)
+            info.size = len(content)
+            info.mtime = 0
+            archive.addfile(info, io.BytesIO(content))
+    return stream.getvalue()
+
+
+_SOURCE_ARCHIVE = _source_archive_bytes()
+_SOURCE_HASH = hashlib.sha256(_SOURCE_ARCHIVE).hexdigest()
+_FFMPEG_RUNTIME = {
+    "ffmpeg.exe": b"ffmpeg",
+    "ffprobe.exe": b"ffprobe",
+    "libavcodec-61.dll": b"codec dll",
+    "libavutil-59.dll": b"util dll",
+}
+_FFMPEG_BUILD_SCRIPT = b"#!/usr/bin/env bash\n# reproducible UCRT64 test recipe\n"
+_RUNTIME_HASHES = "\n".join(
+    f"{hashlib.sha256(content).hexdigest()}  {name}"
+    for name, content in _FFMPEG_RUNTIME.items()
+)
+_FFMPEG_BUILD_METADATA = (
+    "FFmpeg source-built Windows runtime metadata\n"
+    "FFmpeg version: 9.0.2\n"
+    "Source URL: https://ffmpeg.org/releases/ffmpeg-9.0.2.tar.xz\n"
+    "Source archive: ffmpeg-9.0.2.tar.xz\n"
+    f"Source archive SHA-256: {_SOURCE_HASH}\n"
+    "Source signature: ffmpeg-9.0.2.tar.xz.asc\n"
+    "Signature result: VALID\n"
+    "Release key fingerprint: FCF986EA15E6E293A5644F10B4322F04D67658D8\n"
+    "Configure arguments:\n"
+    "  --disable-everything\n"
+    "  --disable-gpl\n"
+    "  --disable-version3\n"
+    "  --disable-nonfree\n"
+    "  --disable-autodetect\n"
+    "  --disable-network\n"
+    "  --enable-shared\n"
+    "  --disable-static\n"
+    "Runtime-file SHA-256:\n"
+    f"{_RUNTIME_HASHES}\n"
+    f"Build script SHA-256: {hashlib.sha256(_FFMPEG_BUILD_SCRIPT).hexdigest()}\n"
+)
+_SOURCE_OFFER = _full_text(
+    "FFmpeg 9.0.2 exact corresponding source included with this distribution\n"
+    f"Source archive SHA-256: {_SOURCE_HASH}\n"
+    "Source archive: ffmpeg-9.0.2.tar.xz\n"
+    "The detached signature, signing key, build recipe, source-fetch script, license, "
+    "runtime hashes, and GCC runtime notices are included in the same ZIP."
+)
 _RELEASE_LICENSES = {
     "BUILD-METADATA.txt": b"Collected package versions and provenance (fixture)\n",
-    "FFmpeg/LICENSE.txt": _full_text("GNU GENERAL PUBLIC LICENSE Version 3"),
-    "FFmpeg/BUILD-METADATA.txt": b"BtbN archive metadata (fixture)\n",
-    "FFmpeg/SOURCE-OFFER.md": _full_text("Written corresponding FFmpeg source offer"),
-    "FFmpeg/SOURCE-METADATA.txt": b"Binary/source archive digest metadata\n",
-    "FFmpeg/Source/ffmpeg-corresponding-source.tar.xz": b"source archive fixture",
+    "FFmpeg/LICENSE-LGPL-2.1.txt": _full_text(
+        "GNU LESSER GENERAL PUBLIC LICENSE\nVersion 2.1"
+    ),
+    "FFmpeg/BUILD-METADATA.txt": _FFMPEG_BUILD_METADATA.encode(),
+    "FFmpeg/SOURCE-OFFER.md": _SOURCE_OFFER,
+    "FFmpeg/Source/ffmpeg-9.0.2.tar.xz": _SOURCE_ARCHIVE,
+    "FFmpeg/Source/ffmpeg-9.0.2.tar.xz.asc": b"detached signature fixture",
+    "FFmpeg/Source/ffmpeg-release-key.asc": b"FFmpeg release public key fixture",
+    "FFmpeg/Source/build_ffmpeg.sh": _FFMPEG_BUILD_SCRIPT,
+    "FFmpeg/Source/fetch_ffmpeg.py": b"# pinned source-fetch fixture\n",
+    "FFmpeg/GCC-RUNTIME-LICENSES/gcc/COPYING.RUNTIME": _full_text(
+        "GCC Runtime Library Exception"
+    ),
     "PySide6/LGPL-3.0-only.txt": _full_text("GNU LESSER GENERAL PUBLIC LICENSE Version 3"),
     "PySide6/Qt-GPL-exception-1.0.txt": _full_text("Qt GPL exception"),
     "Qt/LGPL-3.0-only.txt": _full_text("Qt LGPL Version 3"),
@@ -43,6 +112,8 @@ _RELEASE_LICENSES = {
 
 @pytest.fixture(autouse=True)
 def fake_release_license_material(monkeypatch):
+    monkeypatch.setattr(license_material, "FFMPEG_SOURCE_SHA256", _SOURCE_HASH)
+
     def collect(destination, *, repo_root):
         destination = Path(destination)
         for relative_path, content in _RELEASE_LICENSES.items():
@@ -67,8 +138,8 @@ def fake_pyinstaller_runner(argv, *, cwd):
     licenses_dir.mkdir(parents=True)
     shutil.copytree(REPO_ROOT / "LICENSES", licenses_dir, dirs_exist_ok=True)
     (app_dir / "AudioTranscriber.exe").write_bytes(b"app")
-    (app_dir / "ffmpeg.exe").write_bytes(b"ffmpeg")
-    (app_dir / "ffprobe.exe").write_bytes(b"ffprobe")
+    for filename, content in _FFMPEG_RUNTIME.items():
+        (app_dir / filename).write_bytes(content)
 
     # A build directory may contain project or developer data; the release ZIP must not.
     (app_dir / "sample.wav").write_bytes(b"audio")
@@ -95,7 +166,10 @@ def test_zip_contains_expected_layout_and_name(tmp_path):
     assert "AudioTranscriber/LICENSES/README.md" in names
     assert "AudioTranscriber/LICENSES/THIRD-PARTY-NOTICES.md" in names
     assert "AudioTranscriber/LICENSES/FFmpeg/SOURCE-OFFER.md" in names
-    assert "AudioTranscriber/LICENSES/FFmpeg/Source/ffmpeg-corresponding-source.tar.xz" in names
+    assert "AudioTranscriber/LICENSES/FFmpeg/Source/ffmpeg-9.0.2.tar.xz" in names
+    assert "AudioTranscriber/LICENSES/FFmpeg/Source/ffmpeg-9.0.2.tar.xz.asc" in names
+    assert "AudioTranscriber/LICENSES/FFmpeg/Source/ffmpeg-release-key.asc" in names
+    assert "AudioTranscriber/LICENSES/FFmpeg/Source/build_ffmpeg.sh" in names
     assert "AudioTranscriber/LICENSES/Python-Packages.md" in names
     with zipfile.ZipFile(zip_path) as archive:
         for relative_path, expected_content in _RELEASE_LICENSES.items():
@@ -111,9 +185,9 @@ def test_third_party_notice_names_all_bundled_components_and_says_texts_are_not_
 
     for component in ("FFmpeg and FFprobe", "PySide6", "Qt", "httpx", "keyring", "Python"):
         assert component in notices
-    for license_name in ("GPL v3", "LGPL v3", "BSD 3-Clause", "MIT", "PSF"):
+    for license_name in ("LGPL v2.1", "LGPL v3", "BSD 3-Clause", "MIT", "PSF"):
         assert license_name in notices
-    assert "Full license texts are not included" in notices
+    assert "full license texts" in notices.lower()
 
 
 def test_zip_root_folder_is_named_for_the_app(tmp_path):
@@ -138,6 +212,7 @@ def test_zip_excludes_media_environment_and_key_files_except_keyring_license_mat
         for name in names
         if any("key" in component.lower() for component in Path(name).parts)
         and not name.startswith("AudioTranscriber/LICENSES/keyring/")
+        and name != "AudioTranscriber/LICENSES/FFmpeg/Source/ffmpeg-release-key.asc"
     ]
     assert "AudioTranscriber/LICENSES/keyring/LICENSE" in names
 
@@ -209,6 +284,7 @@ def test_spec_is_parseable_onedir_and_includes_only_existing_optional_assets(tmp
     packaging_dir = tmp_path / "packaging"
     no_assets = _execute_spec(spec_text, packaging_dir)
     assert no_assets["analysis"]["datas"] == []
+    assert no_assets["analysis"]["binaries"] == []
     assert no_assets["exe"]["console"] is False
     assert no_assets["exe"]["contents_directory"] == "."
 
@@ -216,141 +292,43 @@ def test_spec_is_parseable_onedir_and_includes_only_existing_optional_assets(tmp
     bin_dir.mkdir()
     (bin_dir / "ffmpeg.exe").write_bytes(b"ffmpeg")
     (bin_dir / "ffprobe.exe").write_bytes(b"ffprobe")
+    (bin_dir / "libavcodec-61.dll").write_bytes(b"codec")
+    (bin_dir / "libavutil-59.dll").write_bytes(b"util")
     licenses_dir = packaging_dir.parent / "LICENSES"
     licenses_dir.mkdir()
-    datas = _execute_spec(spec_text, packaging_dir)["analysis"]["datas"]
-    destinations = {destination for _, destination in datas}
-    assert destinations == {".", "LICENSES"}
+    populated = _execute_spec(spec_text, packaging_dir)["analysis"]
+    destinations = {destination for _, destination in populated["datas"]}
+    assert destinations == {"LICENSES"}
+    binaries = {(Path(source).name, destination) for source, destination in populated["binaries"]}
+    assert binaries == {
+        ("ffmpeg.exe", "."),
+        ("ffprobe.exe", "."),
+        ("libavcodec-61.dll", "."),
+        ("libavutil-59.dll", "."),
+    }
 
 
-def _ffmpeg_archive() -> bytes:
-    stream = io.BytesIO()
-    with zipfile.ZipFile(stream, "w") as archive:
-        archive.writestr("ffmpeg-master-latest-win64-gpl/bin/ffmpeg.exe", b"ffmpeg-binary")
-        archive.writestr("ffmpeg-master-latest-win64-gpl/bin/ffprobe.exe", b"ffprobe-binary")
-        archive.writestr(
-            "ffmpeg-master-latest-win64-gpl/LICENSE.txt",
-            b"GNU GENERAL PUBLIC LICENSE Version 3 (BtbN archive fixture)\n",
-        )
-    return stream.getvalue()
-
-
-def _write_cached_ffmpeg_assets(binary_dir: Path) -> tuple[Path, Path]:
-    binary_dir.mkdir(parents=True, exist_ok=True)
-    ffmpeg = binary_dir / "ffmpeg.exe"
-    ffprobe = binary_dir / "ffprobe.exe"
-    ffmpeg.write_bytes(b"existing ffmpeg")
-    ffprobe.write_bytes(b"existing ffprobe")
-    (binary_dir / fetch_ffmpeg.LICENSE_FILENAME).write_text(
-        "GNU GENERAL PUBLIC LICENSE\nVersion 3, 29 June 2007\n",
-        encoding="utf-8",
+def test_spec_collects_all_ffmpeg_shared_libraries(tmp_path):
+    spec_path = REPO_ROOT / "packaging" / "AudioTranscriber.spec"
+    spec_text = spec_path.read_text(encoding="utf-8")
+    packaging_dir = tmp_path / "packaging"
+    bin_dir = packaging_dir / "bin"
+    bin_dir.mkdir(parents=True)
+    expected_files = (
+        "ffmpeg.exe",
+        "ffprobe.exe",
+        "libavcodec-61.dll",
+        "libavformat-61.dll",
+        "libavutil-59.dll",
+        "libswresample-5.dll",
     )
-    (binary_dir / fetch_ffmpeg.ARCHIVE_METADATA_FILENAME).write_text(
-        f"Source URL: {fetch_ffmpeg.FFMPEG_URL}\n"
-        "Archive entry: ffmpeg-master-latest-win64-gpl/LICENSE.txt\n"
-        "Archive SHA-256 (traceability only; not pinned): " + "a" * 64 + "\n",
-        encoding="utf-8",
-    )
-    return ffmpeg, ffprobe
+    for filename in expected_files:
+        (bin_dir / filename).write_bytes(filename.encode())
 
+    analysis = _execute_spec(spec_text, packaging_dir)["analysis"]
 
-def test_fetch_returns_existing_binaries_without_downloading(tmp_path, monkeypatch):
-    binary_dir = tmp_path / "bin"
-    ffmpeg, ffprobe = _write_cached_ffmpeg_assets(binary_dir)
-
-    def unexpected_download(*args, **kwargs):
-        raise AssertionError("existing binaries should not trigger a download")
-
-    monkeypatch.setattr(fetch_ffmpeg, "urlopen", unexpected_download)
-    assert fetch_ffmpeg.fetch(binary_dir) == (ffmpeg, ffprobe)
-
-
-def test_fetch_cli_uses_license_complete_cache_without_network(tmp_path, monkeypatch):
-    binary_dir = tmp_path / "ffmpeg bin"
-    _write_cached_ffmpeg_assets(binary_dir)
-
-    def unexpected_download(*args, **kwargs):
-        raise AssertionError("complete cached assets must not trigger a network fetch")
-
-    monkeypatch.setattr(fetch_ffmpeg, "urlopen", unexpected_download)
-
-    assert fetch_ffmpeg.main([str(binary_dir)]) == 0
-
-
-def test_fetch_downloads_binaries_and_license_material_from_archive(tmp_path, monkeypatch):
-    archive_bytes = _ffmpeg_archive()
-    monkeypatch.setattr(fetch_ffmpeg, "urlopen", lambda *args, **kwargs: io.BytesIO(archive_bytes))
-
-    ffmpeg, ffprobe = fetch_ffmpeg.fetch(tmp_path / "bin")
-
-    assert ffmpeg.read_bytes() == b"ffmpeg-binary"
-    assert ffprobe.read_bytes() == b"ffprobe-binary"
-    license_path = ffmpeg.parent / fetch_ffmpeg.LICENSE_FILENAME
-    metadata_path = ffmpeg.parent / fetch_ffmpeg.ARCHIVE_METADATA_FILENAME
-    assert license_path.read_bytes().startswith(b"GNU GENERAL PUBLIC LICENSE")
-    assert b"BtbN archive fixture" in license_path.read_bytes()
-    metadata = metadata_path.read_text(encoding="utf-8")
-    assert fetch_ffmpeg.FFMPEG_URL in metadata
-    assert "LICENSE.txt" in metadata
-    assert re.search(r"Archive SHA-256 .*?: [0-9a-f]{64}", metadata)
-    assert sorted(path.name for path in ffmpeg.parent.iterdir()) == sorted(
-        [
-            "ffmpeg.exe",
-            "ffprobe.exe",
-            fetch_ffmpeg.LICENSE_FILENAME,
-            fetch_ffmpeg.ARCHIVE_METADATA_FILENAME,
-        ]
-    )
-
-
-def test_fetch_fails_clearly_when_archive_has_no_license_text(tmp_path, monkeypatch):
-    stream = io.BytesIO()
-    with zipfile.ZipFile(stream, "w") as archive:
-        archive.writestr("ffmpeg-master-latest-win64-gpl/bin/ffmpeg.exe", b"ffmpeg")
-        archive.writestr("ffmpeg-master-latest-win64-gpl/bin/ffprobe.exe", b"ffprobe")
-    monkeypatch.setattr(fetch_ffmpeg, "urlopen", lambda *args, **kwargs: io.BytesIO(stream.getvalue()))
-
-    with pytest.raises(RuntimeError, match="LICENSE.txt"):
-        fetch_ffmpeg.fetch(tmp_path / "bin")
-
-
-def test_fetch_wraps_download_errors_with_the_source_url(tmp_path, monkeypatch):
-    def failed_download(*args, **kwargs):
-        raise OSError("offline")
-
-    monkeypatch.setattr(fetch_ffmpeg, "urlopen", failed_download)
-
-    with pytest.raises(RuntimeError, match=fetch_ffmpeg.FFMPEG_URL):
-        fetch_ffmpeg.fetch(tmp_path / "bin")
-
-
-def test_fetch_cli_passes_the_destination_argument_as_a_path(monkeypatch, tmp_path):
-    calls = []
-    destination = tmp_path / "ffmpeg bin"
-    monkeypatch.setattr(fetch_ffmpeg, "fetch", lambda path: calls.append(path))
-
-    assert fetch_ffmpeg.main([str(destination)]) == 0
-
-    assert calls == [destination]
-
-
-def test_fetch_script_cli_accepts_destination_and_uses_existing_binaries(tmp_path):
-    binary_dir = tmp_path / "ffmpeg bin"
-    _write_cached_ffmpeg_assets(binary_dir)
-    license_path = binary_dir / fetch_ffmpeg.LICENSE_FILENAME
-    metadata_path = binary_dir / fetch_ffmpeg.ARCHIVE_METADATA_FILENAME
-    assert license_path.is_file() and license_path.read_bytes().strip()
-    assert metadata_path.is_file() and metadata_path.read_bytes().strip()
-
-    result = subprocess.run(
-        [sys.executable, str(REPO_ROOT / "packaging" / "fetch_ffmpeg.py"), str(binary_dir)],
-        cwd=REPO_ROOT,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-
-    assert result.returncode == 0, result.stderr
+    binaries = {(Path(source).name, destination) for source, destination in analysis["binaries"]}
+    assert binaries == {(filename, ".") for filename in expected_files}
 
 
 def test_default_build_runner_uses_argv_and_reports_missing_pyinstaller(tmp_path, monkeypatch):

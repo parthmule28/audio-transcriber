@@ -43,9 +43,17 @@ def _is_excluded(relative_path: Path) -> bool:
     is_license_material = (
         bool(relative_path.parts) and relative_path.parts[0].casefold() == "licenses"
     )
+    is_ffmpeg_release_key = tuple(part.casefold() for part in relative_path.parts) == (
+        "licenses",
+        "ffmpeg",
+        "source",
+        "ffmpeg-release-key.asc",
+    )
     for part in relative_path.parts:
         folded = part.casefold()
-        if "key" in folded and not (is_license_material and folded == "keyring"):
+        if "key" in folded and not (
+            (is_license_material and folded == "keyring") or is_ffmpeg_release_key
+        ):
             return True
         if folded == ".env" or folded.startswith(".env."):
             return True

@@ -1,36 +1,7 @@
-# FFmpeg source-compliance release blocker
+# FFmpeg source/build validation status
 
-**Status: unresolved; do not publish or redistribute the Windows release ZIP.**
+The prior blocker described the unpinned BtbN GPL binary archive. That packaging path has been replaced and this document must not be used as instructions for new builds.
 
-The approved packaging plan intentionally retains the unpinned BtbN URL for
-`ffmpeg-master-latest-win64-gpl.zip`. The fetcher records the fetched archive's
-SHA-256 for traceability, but that digest is not pinned and does not identify or
-prove the exact corresponding source. The fetched archive currently supplies a
-license file but no source archive or written source offer. The repository has
-no evidence establishing the matching source revision, build recipe, patches,
-or other linked-library notices for the current binary.
+The replacement pins official FFmpeg 9.0.2 source by SHA-256, verifies the detached release signature against the pinned release-key fingerprint, builds shared libraries with GPL/version-3/nonfree/network features disabled, and includes the source archive, signature, key, license, build recipe, toolchain notices, and generated provenance in the Windows ZIP. The packager fails closed if those materials or the hashes of the executables and FFmpeg DLLs are absent or inconsistent.
 
-`packaging/build_release.py` calls the license-material collector before writing
-the ZIP. It fails closed unless `packaging/ffmpeg-source-compliance/` contains:
-
-- `ffmpeg-corresponding-source.tar.xz`: the exact source and build recipe for
-  the current binary (must include FFmpeg source files and a build recipe);
-- `SOURCE-METADATA.txt`: the current fetched binary archive SHA-256, source
-  archive SHA-256, source archive filename, maintainer identity, and verification
-  evidence; and
-- `SOURCE-OFFER.md`: a substantive written offer identifying both exact hashes
-  and where the corresponding source is supplied (the release package includes
-  the source archive).
-
-The packager hashes the source archive, checks the binary hash against the
-metadata emitted by the *current* `latest` download, validates that the source
-archive can be read, checks for source/build files, and includes the source and
-offer in the ZIP. A changed upstream `latest` archive therefore invalidates old
-source metadata. Automated checks cannot establish legal sufficiency or prove
-that a maintainer's correspondence review is correct: the maintainer must verify
-the precise BtbN build revision, source/configuration/patch correspondence, and
-all additional notices before adding these materials. Until that evidence exists,
-the workflow is expected to fail before the release ZIP is produced and before a
-GitHub Release can be published.
-
-This repository makes no claim that redistribution is currently compliant.
+**Validation remains pending until Windows CI successfully completes the source build, FFmpeg feature smoke test, application self-test, license/source collection, and ZIP inspection. Do not treat Linux unit tests or this document as proof that the Windows build or redistribution review has succeeded.** No legal-compliance guarantee is made; review the exact output and all applicable notices before redistribution.

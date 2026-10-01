@@ -69,9 +69,11 @@ src/audio_transcriber/
 tests/                          # mirrors src/ layout, one test module per source module
 packaging/
   AudioTranscriber.spec         # PyInstaller onedir spec
-  fetch_ffmpeg.py               # download FFmpeg/FFprobe into packaging/bin
+  fetch_ffmpeg.py               # fetch and verify pinned FFmpeg source/signature
+  build_ffmpeg.sh               # source-build FFmpeg in MSYS2 UCRT64
+  smoke_test_ffmpeg.py          # synthetic-media runtime feature test
   build_release.py              # onedir build + zip
-.github/workflows/release.yml   # test, package, self-test, publish
+.github/workflows/release.yml   # test, source-build, package, self-test, artifact/release
 ```
 
 ---
@@ -984,7 +986,7 @@ git commit -m "feat: add headless self-test for Qt and bundled FFmpeg"
 
 **Interfaces:**
 - Consumes: the package entry point (`audio_transcriber.__main__:main`) and `selftest.run_self_test`.
-- Produces: `build_release.build(version: str, *, output_dir: Path, repo_root: Path) -> Path` returning the path of the created `AudioTranscriber-v<version>-win-x64.zip`. `build_release.zip_contents(zip_path: Path) -> list[str]` for tests. `fetch_ffmpeg.fetch(dest_dir: Path) -> tuple[Path, Path]` returning `(ffmpeg, ffprobe)`.
+- Produces: `build_release.build(version: str, *, output_dir: Path, repo_root: Path) -> Path` returning the path of the created `AudioTranscriber-v<version>-win-x64.zip`. `build_release.zip_contents(zip_path: Path) -> list[str]` for tests. The pinned fetcher returns the verified FFmpeg source archive and signature; the UCRT64 builder stages both tools and all shared DLLs with source/license provenance.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -1018,17 +1020,17 @@ Add `REPO_ROOT = Path(__file__).resolve().parents[1]` and `sys.path.insert(0, st
 
 - [ ] **Step 3: Write `packaging/AudioTranscriber.spec`**
 
-A PyInstaller spec using `Analysis` + `COLLECT` (never `EXE` alone / `onefile`). It sets `name="AudioTranscriber"` and `console=False`, and excludes unneeded Qt modules (`PySide6.QtQml`, `PySide6.QtQuick`, `PySide6.Qt3DCore`, `PySide6.QtWebEngineCore`) and test packages. It adds `datas` entries for `packaging/bin/ffmpeg.exe`, `packaging/bin/ffprobe.exe`, and the `LICENSES` directory only when those paths exist, so the spec still loads on a machine without the binaries.
+A PyInstaller spec using `Analysis` + `COLLECT` (never `EXE` alone / `onefile`). It sets `name="AudioTranscriber"` and `console=False`, and excludes unneeded Qt modules (`PySide6.QtQml`, `PySide6.QtQuick`, `PySide6.Qt3DCore`, `PySide6.QtWebEngineCore`) and test packages. It adds `binaries` entries for `ffmpeg.exe`, `ffprobe.exe`, and each FFmpeg `*.dll` in `packaging/bin/`, placing them at the onedir root; the `LICENSES` directory remains a data entry. Missing optional FFmpeg assets are not fabricated.
 
 Because `console=False` builds a windowed executable on Windows, `stdout` is not reliable in the packaged app. `selftest.run_self_test()` must therefore **also** write its per-check lines to a file next to the executable (`self-test.log`, overwritten each run) in addition to printing them, and CI verifies the log and the exit code rather than console output.
 
 - [ ] **Step 4: Write `packaging/fetch_ffmpeg.py`**
 
-`fetch(dest_dir)` retains the approved unpinned BtbN `latest` GPL URL, extracts the binaries, and records the fetched archive SHA-256 for traceability only. It is not a pinned checksum and does not establish source correspondence. Release packaging must include the exact corresponding source, a written source offer, maintainer verification evidence, and notices or fail closed before writing a ZIP.
+`fetch(dest_dir)` downloads only official FFmpeg 9.0.2 source and its detached signature, validates the pinned SHA-256, and rejects altered cache entries. `packaging/build_ffmpeg.sh` verifies the signature against the pinned FFmpeg release-key fingerprint, builds shared libraries under MSYS2 UCRT64 with GPL/version-3/nonfree/autodetect/network features disabled, and stages the executables, every runtime DLL, the source/signature/key, LGPL license, toolchain notices, source offer, and generated hashes. `packaging/smoke_test_ffmpeg.py` exercises local WAV/M4A/OGG/FLAC probe/decode, MP3 decoder registration, silence detection, and canonical 16 kHz mono `pcm_s16le` output using only generated temporary WAV media.
 
 - [ ] **Step 5: Write `packaging/build_release.py`**
 
-`build(version, output_dir, repo_root, runner=None)` rejects a version that differs from `audio_transcriber.__version__`, invokes PyInstaller with the spec, requires substantive license material for active direct/transitive package and PyInstaller bootloader distributions, and requires FFmpeg source/offer material whose manifest matches the currently fetched binary archive. Missing or mismatched material is a release blocker and prevents ZIP creation. The README refers to the latest Release rather than duplicating a version literal.
+`build(version, output_dir, repo_root, runner=None)` rejects a version that differs from `audio_transcriber.__version__`, invokes PyInstaller with the spec, requires substantive license material for active direct/transitive package and PyInstaller bootloader distributions, and requires the pinned FFmpeg source/signature/license/build material and matching source/runtime hashes. Missing or altered provenance prevents ZIP creation. The README documents both the manual Actions test artifact and the latest GitHub Release without duplicating a version literal.
 
 - [ ] **Step 6: Run the tests to verify they pass**
 
@@ -1059,11 +1061,11 @@ git commit -m "build: package onedir Windows app with bundled FFmpeg"
 
 **Interfaces:**
 - Consumes: `python -m pytest`, `packaging/fetch_ffmpeg.py`, `packaging/build_release.py`, `python -m audio_transcriber --self-test`.
-- Produces: a tag-triggered workflow that tests, packages, self-tests, and publishes `AudioTranscriber-v<version>-win-x64.zip`.
+- Produces: a Windows workflow that tests, builds pinned FFmpeg from source, smoke-tests local features, packages and self-tests the app, uploads an Actions artifact for manual dispatch, and publishes the ZIP only for version-tag pushes.
 
 - [ ] **Step 1: Write `.github/workflows/release.yml`**
 
-Triggers: `push` on tags matching `v*`, plus `workflow_dispatch`. Job runs on `windows-2022`. Steps, in order: `actions/checkout@v4`; `actions/setup-python@v5` with `python-version: "3.12"`; `pip install -e ".[dev,packaging]"`; `python -m pytest tests/ -q`; `python packaging/fetch_ffmpeg.py packaging/bin`; `python packaging/build_release.py --version "${GITHUB_REF_NAME#v}"`; `dist/AudioTranscriber/AudioTranscriber.exe --self-test` (must exit 0, and `dist/AudioTranscriber/self-test.log` must contain the four check lines); `actions/upload-artifact@v4` with the ZIP; then `softprops/action-gh-release@v2` uploading the ZIP on tag pushes.
+Triggers: `push` on tags matching `v*`, plus `workflow_dispatch`. Job runs on `windows-2022`. It sets up MSYS2 UCRT64 with MinGW GCC, NASM, and GnuPG; runs the Python suite; source-builds and signature-verifies pinned FFmpeg 9.0.2; runs the synthetic-media FFmpeg smoke test; packages the ZIP; and runs `AudioTranscriber.exe --self-test` (must exit 0, and `self-test.log` must contain the four check lines). Manual dispatch uploads `AudioTranscriber-windows-test` and does not create a GitHub Release. The Release action remains guarded by a version-tag push.
 
 The workflow must define **no** `secrets` or `env` containing an OpenRouter key, and no step may upload `.wav`/`.m4a` files. Add a comment stating both facts explicitly.
 
@@ -1074,11 +1076,11 @@ Expected: prints only `exit=1` (no matches).
 
 - [ ] **Step 3: Write `README.md`**
 
-Sections cover app behavior, Privacy and ZDR, a version-independent latest-Release download instruction, the explicit FFmpeg source-compliance release blocker, first run, key replacement/forget settings, language code behavior, costs, troubleshooting, and privacy details.
+Sections cover app behavior, Privacy and ZDR, version-independent latest-Release and manual Actions test-artifact download instructions, the pinned FFmpeg source/build validation status, first run, key replacement/forget settings, language code behavior, costs, troubleshooting, and privacy details.
 
 - [ ] **Step 4: Write `LICENSES/README.md`**
 
-Index the selected FFmpeg/FFprobe build and source-compliance blocker; PySide6, Qt, and Python; and the active direct/transitive package inventory generated from the Windows packaging environment (including PyInstaller and its bootloader). Copy substantive full texts/notices into the release ZIP and fail packaging if any required package license or exact FFmpeg source/offer material is missing. Do not claim legal compliance without source/provenance evidence.
+Index the pinned source-built FFmpeg/FFprobe configuration and pending Windows validation; PySide6, Qt, and Python; and the active direct/transitive package inventory generated from the Windows packaging environment (including PyInstaller and its bootloader). Copy substantive full texts/notices and exact FFmpeg source/build provenance into the ZIP and fail packaging if any required license, signature, source, recipe, or hash material is missing. Do not claim legal compliance without review of the exact built output and applicable notices.
 
 - [ ] **Step 5: Verify the README states the ZDR warning verbatim**
 

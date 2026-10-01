@@ -14,6 +14,13 @@ from urllib.request import urlopen
 
 from packaging.markers import default_environment
 from packaging.requirements import Requirement
+from fetch_ffmpeg import (
+    FFMPEG_VERSION,
+    RELEASE_KEY_FINGERPRINT,
+    SOURCE_ARCHIVE_NAME,
+    SOURCE_SHA256,
+    SOURCE_URL,
+)
 
 
 class LicenseMaterialError(RuntimeError):
@@ -24,11 +31,14 @@ REQUIRED_LICENSE_FILES = (
     "README.md",
     "THIRD-PARTY-NOTICES.md",
     "BUILD-METADATA.txt",
-    "FFmpeg/LICENSE.txt",
+    "FFmpeg/LICENSE-LGPL-2.1.txt",
     "FFmpeg/BUILD-METADATA.txt",
     "FFmpeg/SOURCE-OFFER.md",
-    "FFmpeg/SOURCE-METADATA.txt",
-    "FFmpeg/Source/ffmpeg-corresponding-source.tar.xz",
+    f"FFmpeg/Source/{SOURCE_ARCHIVE_NAME}",
+    f"FFmpeg/Source/{SOURCE_ARCHIVE_NAME}.asc",
+    "FFmpeg/Source/ffmpeg-release-key.asc",
+    "FFmpeg/Source/build_ffmpeg.sh",
+    "FFmpeg/Source/fetch_ffmpeg.py",
     "PySide6/LGPL-3.0-only.txt",
     "PySide6/Qt-GPL-exception-1.0.txt",
     "Qt/LGPL-3.0-only.txt",
@@ -39,7 +49,7 @@ REQUIRED_LICENSE_FILES = (
 )
 
 _SUBSTANTIVE_LICENSE_FILES = (
-    "FFmpeg/LICENSE.txt",
+    "FFmpeg/LICENSE-LGPL-2.1.txt",
     "PySide6/LGPL-3.0-only.txt",
     "PySide6/Qt-GPL-exception-1.0.txt",
     "Qt/LGPL-3.0-only.txt",
@@ -49,7 +59,9 @@ _SUBSTANTIVE_LICENSE_FILES = (
 )
 _LICENSE_MINIMUM_BYTES = 512
 _PACKAGING_ROOT_DISTRIBUTIONS = ("PySide6", "httpx", "keyring", "PyInstaller")
-_FFMPEG_SOURCE_ARCHIVE = "ffmpeg-corresponding-source.tar.xz"
+FFMPEG_SOURCE_SHA256 = SOURCE_SHA256
+_FFMPEG_RUNTIME_EXECUTABLES = ("ffmpeg.exe", "ffprobe.exe")
+_FFMPEG_METADATA_FILE = "FFMPEG-BUILD-METADATA.txt"
 
 _LICENSE_BASENAMES = (
     "license",
@@ -87,6 +99,7 @@ def validate_release_license_material(license_dir: Path) -> None:
         )
     if not _is_substantive_license((license_dir / "FFmpeg/SOURCE-OFFER.md").read_bytes()):
         raise LicenseMaterialError("The FFmpeg source offer is missing or insubstantial")
+    _validate_ffmpeg_release_bundle(license_dir)
 
 
 def _distribution(name: str):
@@ -333,117 +346,231 @@ def _copy_required_wheel_license(distribution, destination: Path, label: str) ->
     return f"{distribution.metadata.get('Name', label)} {distribution.version}: {asset[0]}"
 
 
-def _copy_ffmpeg_material(license_dir: Path, repo_root: Path) -> str:
-    from fetch_ffmpeg import ARCHIVE_METADATA_FILENAME, LICENSE_FILENAME
-
-    source_dir = Path(repo_root) / "packaging" / "bin"
-    sources = (
-        (source_dir / LICENSE_FILENAME, license_dir / "FFmpeg" / "LICENSE.txt"),
-        (source_dir / ARCHIVE_METADATA_FILENAME, license_dir / "FFmpeg" / "BUILD-METADATA.txt"),
+def _metadata_value(metadata_text: str, label: str) -> str:
+    matches = re.findall(
+        rf"^{re.escape(label)}:\s*(.*?)\s*$", metadata_text, re.MULTILINE
     )
-    for source, destination in sources:
-        if not source.is_file() or not source.read_bytes().strip():
-            raise LicenseMaterialError(
-                f"Required BtbN FFmpeg archive material is absent or empty: {source}; "
-                "run packaging/fetch_ffmpeg.py to fetch the binaries and license text"
-            )
-        if source.name == LICENSE_FILENAME and not _is_substantive_license(source.read_bytes()):
-            raise LicenseMaterialError(
-                "The fetched FFmpeg LICENSE.txt is not a substantive full license text"
-            )
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(source, destination)
-    return f"BtbN archive: {sources[0][0]} and {sources[1][0]}"
+    if len(matches) != 1 or not matches[0]:
+        raise LicenseMaterialError(f"FFmpeg build metadata must contain one {label!r} field")
+    return matches[0]
 
 
-def _copy_ffmpeg_source_material(license_dir: Path, repo_root: Path) -> tuple[str, str]:
-    """Stage a hash-matched source archive and written offer or fail closed."""
-    source_dir = Path(repo_root) / "packaging" / "ffmpeg-source-compliance"
-    source_archive = source_dir / _FFMPEG_SOURCE_ARCHIVE
-    source_metadata = source_dir / "SOURCE-METADATA.txt"
-    source_offer = source_dir / "SOURCE-OFFER.md"
-    required = (source_archive, source_metadata, source_offer)
-    absent = [path.name for path in required if not path.is_file() or not path.stat().st_size]
-    if absent:
-        raise LicenseMaterialError(
-            "Release blocker: exact corresponding FFmpeg source/offer is not established; "
-            "missing " + ", ".join(absent) + ". Do not publish the release ZIP."
-        )
-
-    binary_metadata_path = Path(repo_root) / "packaging" / "bin" / "FFMPEG-ARCHIVE-METADATA.txt"
-    try:
-        binary_metadata = binary_metadata_path.read_text(encoding="utf-8")
-        source_metadata_text = source_metadata.read_text(encoding="utf-8")
-        offer_text = source_offer.read_text(encoding="utf-8")
-        binary_hash = re.search(
-            r"Archive SHA-256[^:]*:\s*([0-9a-f]{64})", binary_metadata, re.IGNORECASE
-        ).group(1).lower()
-        recorded_binary_hash = re.search(
-            r"^Binary archive SHA-256:\s*([0-9a-f]{64})\s*$",
-            source_metadata_text,
-            re.IGNORECASE | re.MULTILINE,
-        ).group(1).lower()
-        recorded_source_hash = re.search(
-            r"^Source archive SHA-256:\s*([0-9a-f]{64})\s*$",
-            source_metadata_text,
-            re.IGNORECASE | re.MULTILINE,
-        ).group(1).lower()
-        recorded_source_name = re.search(
-            r"^Source archive:\s*(\S+)\s*$", source_metadata_text, re.MULTILINE
-        ).group(1)
-        verified_by = re.search(
-            r"^Corresponding source verified by:\s*(.+?)\s*$",
-            source_metadata_text,
-            re.MULTILINE,
-        ).group(1)
-        verification_evidence = re.search(
-            r"^Verification evidence:\s*(.+?)\s*$",
-            source_metadata_text,
-            re.MULTILINE,
-        ).group(1)
-    except (OSError, UnicodeError, AttributeError) as exc:
-        raise LicenseMaterialError(
-            "Release blocker: FFmpeg source metadata must identify the exact fetched binary "
-            "archive and source archive hashes"
-        ) from exc
-
-    actual_source_hash = hashlib.sha256(source_archive.read_bytes()).hexdigest()
-    if (
-        recorded_binary_hash != binary_hash
-        or recorded_source_hash != actual_source_hash
-        or recorded_source_name != source_archive.name
-        or not verified_by.strip()
-        or not verification_evidence.strip()
-        or f"Binary archive SHA-256: {binary_hash}" not in offer_text
-        or f"Source archive SHA-256: {actual_source_hash}" not in offer_text
-        or _FFMPEG_SOURCE_ARCHIVE not in offer_text
-        or not _is_substantive_license(source_offer.read_bytes())
+def _runtime_hashes(metadata_text: str) -> dict[str, str]:
+    if "Runtime-file SHA-256:" not in metadata_text:
+        raise LicenseMaterialError("FFmpeg build metadata is missing runtime SHA-256 records")
+    hashes: dict[str, str] = {}
+    for digest, name in re.findall(
+        r"^([0-9a-f]{64})\s{2,}(.+?)\s*$", metadata_text, re.MULTILINE
     ):
+        safe_name = Path(name.removeprefix("./")).name
+        if safe_name in hashes:
+            raise LicenseMaterialError(f"Duplicate FFmpeg runtime SHA-256 record for {safe_name}")
+        hashes[safe_name] = digest
+    required = set(_FFMPEG_RUNTIME_EXECUTABLES)
+    if not required.issubset(hashes) or not any(name.lower().endswith(".dll") for name in hashes):
         raise LicenseMaterialError(
-            "Release blocker: FFmpeg source archive/offer does not match the exact fetched "
-            "binary archive and verified source digest"
+            "FFmpeg build metadata must hash ffmpeg.exe, ffprobe.exe, and every shared DLL"
         )
+    return hashes
 
+
+def _validate_ffmpeg_source_archive(source_archive: Path) -> None:
     try:
         with tarfile.open(source_archive, mode="r:xz") as archive:
-            names = [member.name.casefold() for member in archive.getmembers() if member.isfile()]
+            names = [
+                member.name.casefold()
+                for member in archive.getmembers()
+                if member.isfile()
+            ]
     except (OSError, tarfile.TarError) as exc:
         raise LicenseMaterialError(
-            "Release blocker: corresponding FFmpeg source must be a readable .tar.xz source archive"
+            "The pinned FFmpeg corresponding source must be a readable .tar.xz archive"
         ) from exc
-    has_ffmpeg_source = any("ffmpeg" in name and name.endswith((".c", ".h", ".cpp")) for name in names)
-    has_build_recipe = any(Path(name).name in {"configure", "build.sh", "build.ps1"} for name in names)
-    if not has_ffmpeg_source or not has_build_recipe:
+    if not any(Path(name).name == "configure" for name in names):
+        raise LicenseMaterialError("The FFmpeg source archive is missing its configure script")
+    if not any(Path(name).name == "copying.lgplv2.1" for name in names):
+        raise LicenseMaterialError("The FFmpeg source archive is missing COPYING.LGPLv2.1")
+    if not any(
+        name.endswith((".c", ".h", ".cpp"))
+        and any(part.startswith("libav") for part in Path(name).parts)
+        for name in names
+    ):
+        raise LicenseMaterialError("The FFmpeg source archive contains no libav source files")
+
+
+def _verify_runtime_hashes(metadata_text: str, runtime_dir: Path, *, staged: bool) -> None:
+    recorded = _runtime_hashes(metadata_text)
+    runtime_dir = Path(runtime_dir)
+    for name, expected in recorded.items():
+        path = runtime_dir / name
+        if not path.is_file() or not path.stat().st_size:
+            raise LicenseMaterialError(f"FFmpeg runtime file is missing or empty: {path}")
+        actual = hashlib.sha256(path.read_bytes()).hexdigest()
+        if actual != expected:
+            raise LicenseMaterialError(
+                f"FFmpeg runtime SHA-256 mismatch for {name}: expected {expected}, got {actual}"
+            )
+
+    recorded_dlls = {name for name in recorded if name.lower().endswith(".dll")}
+    if staged:
+        actual_dlls = {path.name for path in runtime_dir.glob("*.dll") if path.is_file()}
+    else:
+        actual_dlls = {
+            path.name
+            for pattern in ("libav*.dll", "libsw*.dll")
+            for path in runtime_dir.glob(pattern)
+            if path.is_file()
+        }
+    if actual_dlls != recorded_dlls:
         raise LicenseMaterialError(
-            "Release blocker: FFmpeg source archive lacks FFmpeg source files or the matching build recipe"
+            "FFmpeg runtime SHA-256 manifest does not match the staged shared DLL set: "
+            f"expected {sorted(recorded_dlls)}, found {sorted(actual_dlls)}"
         )
 
-    source_target = license_dir / "FFmpeg" / "Source"
-    source_target.mkdir(parents=True, exist_ok=True)
-    shutil.copyfile(source_archive, source_target / source_archive.name)
-    shutil.copyfile(source_metadata, license_dir / "FFmpeg" / "SOURCE-METADATA.txt")
-    shutil.copyfile(source_offer, license_dir / "FFmpeg" / "SOURCE-OFFER.md")
-    return binary_hash, actual_source_hash
+
+def _validate_ffmpeg_material_paths(
+    ffmpeg_dir: Path, runtime_dir: Path, *, staged: bool
+) -> tuple[str, str]:
+    source_archive = ffmpeg_dir / "Source" / SOURCE_ARCHIVE_NAME
+    signature = ffmpeg_dir / "Source" / f"{SOURCE_ARCHIVE_NAME}.asc"
+    release_key = ffmpeg_dir / "Source" / "ffmpeg-release-key.asc"
+    build_script = ffmpeg_dir / "Source" / "build_ffmpeg.sh"
+    fetch_script = ffmpeg_dir / "Source" / "fetch_ffmpeg.py"
+    license_path = ffmpeg_dir / "LICENSE-LGPL-2.1.txt"
+    metadata_path = ffmpeg_dir / "BUILD-METADATA.txt"
+    source_offer = ffmpeg_dir / "SOURCE-OFFER.md"
+    required = (
+        source_archive,
+        signature,
+        release_key,
+        build_script,
+        fetch_script,
+        license_path,
+        metadata_path,
+        source_offer,
+    )
+    missing = [path.name for path in required if not path.is_file() or not path.stat().st_size]
+    if missing:
+        raise LicenseMaterialError(
+            "Required FFmpeg source/build/license material is missing or empty: "
+            + ", ".join(missing)
+        )
+
+    if not _is_substantive_license(license_path.read_bytes()):
+        raise LicenseMaterialError("The FFmpeg LGPL license text is insubstantial or incomplete")
+    license_text = license_path.read_text(encoding="utf-8", errors="replace").casefold()
+    if "lesser general public license" not in license_text or "version 2.1" not in license_text:
+        raise LicenseMaterialError("The bundled FFmpeg license is not the full LGPL 2.1 text")
+    if not _is_substantive_license(source_offer.read_bytes()):
+        raise LicenseMaterialError("The FFmpeg source offer is missing or insubstantial")
+
+    metadata_text = metadata_path.read_text(encoding="utf-8")
+    actual_source_hash = hashlib.sha256(source_archive.read_bytes()).hexdigest()
+    recorded_source_hash = _metadata_value(metadata_text, "Source archive SHA-256").lower()
+    if actual_source_hash != FFMPEG_SOURCE_SHA256 or recorded_source_hash != FFMPEG_SOURCE_SHA256:
+        raise LicenseMaterialError(
+            "FFmpeg source SHA-256 mismatch: expected pinned digest "
+            f"{FFMPEG_SOURCE_SHA256}, metadata records {recorded_source_hash}, actual {actual_source_hash}"
+        )
+    if _metadata_value(metadata_text, "FFmpeg version") != FFMPEG_VERSION:
+        raise LicenseMaterialError("FFmpeg build metadata does not match the pinned source version")
+    if _metadata_value(metadata_text, "Source archive") != SOURCE_ARCHIVE_NAME:
+        raise LicenseMaterialError("FFmpeg build metadata names an unexpected source archive")
+    if _metadata_value(metadata_text, "Source URL") != SOURCE_URL:
+        raise LicenseMaterialError("FFmpeg build metadata names an unexpected source URL")
+    if _metadata_value(metadata_text, "Source signature") != f"{SOURCE_ARCHIVE_NAME}.asc":
+        raise LicenseMaterialError("FFmpeg build metadata names an unexpected source signature")
+    if _metadata_value(metadata_text, "Signature result") != "VALID":
+        raise LicenseMaterialError("FFmpeg source signature was not verified by the build")
+    if _metadata_value(metadata_text, "Release key fingerprint").upper() != RELEASE_KEY_FINGERPRINT:
+        raise LicenseMaterialError("FFmpeg source signature used an unexpected release-key fingerprint")
+
+    required_config = (
+        "--disable-everything",
+        "--disable-gpl",
+        "--disable-version3",
+        "--disable-nonfree",
+        "--disable-autodetect",
+        "--disable-network",
+        "--enable-shared",
+        "--disable-static",
+    )
+    missing_flags = [flag for flag in required_config if flag not in metadata_text]
+    if missing_flags or re.search(r"--enable-(?:gpl|version3|nonfree)\b", metadata_text):
+        raise LicenseMaterialError(
+            "FFmpeg build metadata does not attest to the required LGPL-only configuration"
+        )
+    build_hash = hashlib.sha256(build_script.read_bytes()).hexdigest()
+    if _metadata_value(metadata_text, "Build script SHA-256").lower() != build_hash:
+        raise LicenseMaterialError("FFmpeg build-script SHA-256 does not match its included recipe")
+
+    offer_text = source_offer.read_text(encoding="utf-8", errors="replace")
+    if SOURCE_ARCHIVE_NAME not in offer_text or actual_source_hash not in offer_text:
+        raise LicenseMaterialError("The FFmpeg source offer does not identify the exact pinned source")
+    _validate_ffmpeg_source_archive(source_archive)
+    _verify_runtime_hashes(metadata_text, runtime_dir, staged=staged)
+
+    gcc_licenses = ffmpeg_dir / "GCC-RUNTIME-LICENSES"
+    license_files = [path for path in gcc_licenses.rglob("*") if path.is_file()]
+    if not any(_is_substantive_license(path.read_bytes()) for path in license_files):
+        raise LicenseMaterialError("Bundled FFmpeg toolchain runtime license material is missing")
+    return actual_source_hash, _metadata_value(metadata_text, "Build script SHA-256").lower()
+
+
+def _validate_ffmpeg_release_bundle(license_dir: Path) -> tuple[str, str]:
+    ffmpeg_dir = Path(license_dir) / "FFmpeg"
+    return _validate_ffmpeg_material_paths(
+        ffmpeg_dir, Path(license_dir).parent, staged=False
+    )
+
+
+def _copy_ffmpeg_material(license_dir: Path, repo_root: Path) -> str:
+    source_dir = Path(repo_root) / "packaging" / "bin"
+    metadata_path = source_dir / _FFMPEG_METADATA_FILE
+    try:
+        metadata_text = metadata_path.read_text(encoding="utf-8")
+    except (OSError, UnicodeError) as exc:
+        raise LicenseMaterialError(f"Required FFmpeg build metadata is absent or unreadable: {exc}") from exc
+
+    copies = (
+        (source_dir / SOURCE_ARCHIVE_NAME, Path("Source") / SOURCE_ARCHIVE_NAME),
+        (source_dir / f"{SOURCE_ARCHIVE_NAME}.asc", Path("Source") / f"{SOURCE_ARCHIVE_NAME}.asc"),
+        (source_dir / "ffmpeg-release-key.asc", Path("Source") / "ffmpeg-release-key.asc"),
+        (source_dir / "build_ffmpeg.sh", Path("Source") / "build_ffmpeg.sh"),
+        (source_dir / "fetch_ffmpeg.py", Path("Source") / "fetch_ffmpeg.py"),
+        (source_dir / "FFMPEG-LICENSE-LGPL-2.1.txt", Path("LICENSE-LGPL-2.1.txt")),
+        (metadata_path, Path("BUILD-METADATA.txt")),
+        (source_dir / "FFMPEG-SOURCE-OFFER.md", Path("SOURCE-OFFER.md")),
+    )
+    missing = [source.name for source, _destination in copies if not source.is_file()]
+    if missing:
+        raise LicenseMaterialError(
+            "Required FFmpeg source/signature/license/build material is missing: "
+            + ", ".join(missing)
+        )
+    gcc_licenses = source_dir / "GCC-RUNTIME-LICENSES"
+    if not gcc_licenses.is_dir():
+        raise LicenseMaterialError("Required FFmpeg GCC runtime license directory is missing")
+    try:
+        metadata_text = metadata_path.read_text(encoding="utf-8")
+        source_hash = hashlib.sha256((source_dir / SOURCE_ARCHIVE_NAME).read_bytes()).hexdigest()
+        recorded_source_hash = _metadata_value(metadata_text, "Source archive SHA-256").lower()
+    except (OSError, UnicodeError) as exc:
+        raise LicenseMaterialError(f"FFmpeg source archive or build metadata is unreadable: {exc}") from exc
+    if source_hash != FFMPEG_SOURCE_SHA256 or recorded_source_hash != FFMPEG_SOURCE_SHA256:
+        raise LicenseMaterialError(
+            "FFmpeg source SHA-256 mismatch: expected pinned digest "
+            f"{FFMPEG_SOURCE_SHA256}, metadata records {recorded_source_hash}, actual {source_hash}"
+        )
+    _verify_runtime_hashes(metadata_text, source_dir, staged=True)
+
+    ffmpeg_output = Path(license_dir) / "FFmpeg"
+    for source, relative in copies:
+        destination = ffmpeg_output / relative
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(source, destination)
+    shutil.copytree(gcc_licenses, ffmpeg_output / "GCC-RUNTIME-LICENSES", dirs_exist_ok=True)
+    return source_hash
 
 
 def collect_release_license_material(license_dir: Path, *, repo_root: Path) -> None:
@@ -453,13 +580,9 @@ def collect_release_license_material(license_dir: Path, *, repo_root: Path) -> N
     provenance: list[str] = []
 
     try:
-        provenance.append(_copy_ffmpeg_material(license_dir, Path(repo_root)))
-        ffmpeg_binary_hash, ffmpeg_source_hash = _copy_ffmpeg_source_material(
-            license_dir, Path(repo_root)
-        )
+        ffmpeg_source_hash = _copy_ffmpeg_material(license_dir, Path(repo_root))
         provenance.append(
-            f"FFmpeg source archive SHA-256: {ffmpeg_source_hash}; corresponding binary archive "
-            f"SHA-256: {ffmpeg_binary_hash}"
+            f"FFmpeg {FFMPEG_VERSION} source archive SHA-256: {ffmpeg_source_hash}"
         )
 
         _inventory, package_provenance = _collect_package_license_inventory(license_dir)
@@ -576,11 +699,12 @@ def collect_release_license_material(license_dir: Path, *, repo_root: Path) -> N
             "",
             *sorted(set(provenance), key=str.casefold),
             "",
-            "The FFmpeg URL is the Task 12 unpinned BtbN 'latest' archive. Its recorded",
-            "SHA-256 identifies the fetched bytes for traceability only; it is not a pinned",
-            "or verified checksum. The source bundle's operator-attested binary digest is",
-            f"{ffmpeg_binary_hash}; the included source bundle digest is {ffmpeg_source_hash}.",
-            "Review all additional notices required by the actual FFmpeg build before redistribution.",
+            f"FFmpeg {FFMPEG_VERSION} was built from the pinned official source archive",
+            f"{SOURCE_URL} with SHA-256 {ffmpeg_source_hash}.",
+            "The build metadata records the signature verification, release-key fingerprint,",
+            "feature configuration, and hashes of the executables and shared FFmpeg DLLs.",
+            "This inventory is not a legal opinion; review all component and toolchain notices",
+            "before redistribution.",
             "",
         ]
         (license_dir / "BUILD-METADATA.txt").write_text(
