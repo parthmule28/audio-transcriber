@@ -90,7 +90,7 @@
 - [x] **Step 2: Run the test to verify RED.** Run `PYTHONPATH=src QT_QPA_PLATFORM=offscreen /home/parth/Desktop/Code/audio-transcriber-app/.venv/bin/python -m pytest tests/test_build_release.py::test_spec_collects_all_ffmpeg_shared_libraries -q`. Expected: DLLs absent from `Analysis.binaries`.
 - [x] **Step 3: Update the PyInstaller spec.** Collect `ffmpeg.exe`, `ffprobe.exe`, and every `*.dll` from the FFmpeg staging directory as onedir root binaries.
 - [x] **Step 4: Run the spec test to verify GREEN.** Expected: all fixture executables and DLLs collected at root.
-- [x] **Step 5: Add and test the local FFmpeg smoke script.** On Windows CI, use temporary generated WAV only; verify WAV/M4A/OGG/FLAC probe/decode, MP3 decoder registration, silence filter, and output `pcm_s16le`, 16 kHz, mono via FFprobe.
+- [x] **Step 5: Add and test the local FFmpeg smoke script.** On Windows CI, use temporary generated 44.1 kHz stereo WAV only; verify WAV/M4A/OGG/FLAC probe/decode, MP3 decoder registration, silence filter, and actual conversion to `pcm_s16le`, 16 kHz, mono via FFprobe.
 
 ### Task 4: Build and Upload a Windows Actions Test Artifact
 

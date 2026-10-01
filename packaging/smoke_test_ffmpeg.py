@@ -16,25 +16,28 @@ from pathlib import Path
 
 
 SAMPLE_RATE = 16_000
+SYNTHETIC_SAMPLE_RATE = 44_100
 
 
 def _write_synthetic_wav(path: Path) -> None:
     """Generate a short tone/silence/tone WAV without external media or codecs."""
-    tone_samples = SAMPLE_RATE * 3 // 4
-    silence_samples = SAMPLE_RATE * 2 // 5
+    tone_samples = SYNTHETIC_SAMPLE_RATE * 3 // 4
+    silence_samples = SYNTHETIC_SAMPLE_RATE * 2 // 5
     frames = []
     for index in range(tone_samples):
-        value = round(9000 * math.sin(2 * math.pi * 440 * index / SAMPLE_RATE))
-        frames.append(value)
-    frames.extend([0] * silence_samples)
+        left = round(9000 * math.sin(2 * math.pi * 440 * index / SYNTHETIC_SAMPLE_RATE))
+        right = round(7000 * math.sin(2 * math.pi * 660 * index / SYNTHETIC_SAMPLE_RATE))
+        frames.extend((left, right))
+    frames.extend((0, 0) * silence_samples)
     for index in range(tone_samples):
-        value = round(9000 * math.sin(2 * math.pi * 660 * index / SAMPLE_RATE))
-        frames.append(value)
+        left = round(9000 * math.sin(2 * math.pi * 440 * index / SYNTHETIC_SAMPLE_RATE))
+        right = round(7000 * math.sin(2 * math.pi * 660 * index / SYNTHETIC_SAMPLE_RATE))
+        frames.extend((left, right))
 
     with wave.open(str(path), "wb") as output:
-        output.setnchannels(1)
+        output.setnchannels(2)
         output.setsampwidth(2)
-        output.setframerate(SAMPLE_RATE)
+        output.setframerate(SYNTHETIC_SAMPLE_RATE)
         output.writeframes(struct.pack(f"<{len(frames)}h", *frames))
 
 
@@ -101,7 +104,15 @@ def run_smoke_test(
         temp_dir = Path(temp_name)
         synthetic_wav = temp_dir / "synthetic.wav"
         _write_synthetic_wav(synthetic_wav)
-        _probe_audio(ffprobe, synthetic_wav, runner=runner)
+        source_stream = _probe_audio(ffprobe, synthetic_wav, runner=runner)
+        if (
+            source_stream.get("sample_rate") != str(SYNTHETIC_SAMPLE_RATE)
+            or source_stream.get("channels") != 2
+        ):
+            raise RuntimeError(
+                "Synthetic input must be stereo 44.1 kHz so canonical conversion is exercised; "
+                f"FFprobe reported {source_stream!r}"
+            )
 
         formats = (
             ("aac", "ipod", "m4a", "aac", ()),

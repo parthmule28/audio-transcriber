@@ -5,6 +5,7 @@ import io
 import re
 import subprocess
 import sys
+import wave
 from pathlib import Path
 
 import pytest
@@ -196,6 +197,17 @@ def test_ffmpeg_smoke_script_covers_local_media_and_app_features():
         assert expected in source
 
 
+def test_synthetic_wav_starts_noncanonical_stereo_at_44100_hz(tmp_path):
+    synthetic_wav = tmp_path / "synthetic.wav"
+
+    smoke_test_ffmpeg._write_synthetic_wav(synthetic_wav)
+
+    with wave.open(str(synthetic_wav), "rb") as source:
+        assert source.getframerate() == 44_100
+        assert source.getnchannels() == 2
+        assert source.getsampwidth() == 2
+
+
 def test_smoke_uses_local_file_outputs_and_vorbis_compatibility_flags(tmp_path):
     ffmpeg = tmp_path / "ffmpeg.exe"
     ffprobe = tmp_path / "ffprobe.exe"
@@ -208,13 +220,19 @@ def test_smoke_uses_local_file_outputs_and_vorbis_compatibility_flags(tmp_path):
         commands.append(command)
         if Path(command[0]).name == "ffprobe.exe":
             media = Path(command[-1])
+            sample_rate, channels = (
+                ("44100", 2) if media.name == "synthetic.wav" else ("16000", 1)
+            )
             codec = {
                 ".wav": "pcm_s16le",
                 ".m4a": "aac",
                 ".ogg": "vorbis",
                 ".flac": "flac",
             }[media.suffix]
-            stdout = '{"streams":[{"codec_name":"%s","sample_rate":"16000","channels":1}]}' % codec
+            stdout = (
+                '{"streams":[{"codec_name":"%s","sample_rate":"%s","channels":%d}]}'
+                % (codec, sample_rate, channels)
+            )
             return subprocess.CompletedProcess(command, 0, stdout, "")
         if "-decoders" in command:
             return subprocess.CompletedProcess(command, 0, " A....D mp3 MP3 decoder\n", "")
