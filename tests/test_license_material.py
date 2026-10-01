@@ -67,8 +67,8 @@ def _write_ffmpeg_fixture(repo_root: Path) -> dict[str, bytes]:
     files = {
         "ffmpeg.exe": b"ffmpeg fixture executable",
         "ffprobe.exe": b"ffprobe fixture executable",
-        "libavcodec-61.dll": b"codec fixture DLL",
-        "libavutil-59.dll": b"utility fixture DLL",
+        "avcodec-61.dll": b"codec fixture DLL",
+        "avutil-59.dll": b"utility fixture DLL",
         "ffmpeg-9.0.2.tar.xz": _source_archive_bytes(),
         "ffmpeg-9.0.2.tar.xz.asc": b"detached signature fixture",
         "ffmpeg-release-key.asc": b"release signing key fixture",
@@ -114,8 +114,8 @@ def _write_ffmpeg_fixture(repo_root: Path) -> dict[str, bytes]:
         for name in (
             "ffmpeg.exe",
             "ffprobe.exe",
-            "libavcodec-61.dll",
-            "libavutil-59.dll",
+            "avcodec-61.dll",
+            "avutil-59.dll",
         )
     )
     metadata = (
@@ -127,6 +127,11 @@ def _write_ffmpeg_fixture(repo_root: Path) -> dict[str, bytes]:
         "Source signature: ffmpeg-9.0.2.tar.xz.asc\n"
         "Signature result: VALID\n"
         "Release key fingerprint: FCF986EA15E6E293A5644F10B4322F04D67658D8\n"
+        f"Source signature SHA-256: {hashlib.sha256(files['ffmpeg-9.0.2.tar.xz.asc']).hexdigest()}\n"
+        f"Release key SHA-256: {hashlib.sha256(files['ffmpeg-release-key.asc']).hexdigest()}\n"
+        f"FFmpeg license SHA-256: {hashlib.sha256(files['FFMPEG-LICENSE-LGPL-2.1.txt']).hexdigest()}\n"
+        f"Source fetcher SHA-256: {hashlib.sha256(files['fetch_ffmpeg.py']).hexdigest()}\n"
+        f"Source offer SHA-256: {hashlib.sha256(files['FFMPEG-SOURCE-OFFER.md']).hexdigest()}\n"
         "GCC runtime package: mingw-w64-ucrt-x86_64-gcc-libs\n"
         "Configure arguments:\n"
         "  --disable-everything\n"
@@ -263,8 +268,8 @@ def _stage_index(destination: Path, repo_root: Path):
     for filename in (
         "ffmpeg.exe",
         "ffprobe.exe",
-        "libavcodec-61.dll",
-        "libavutil-59.dll",
+        "avcodec-61.dll",
+        "avutil-59.dll",
     ):
         shutil.copyfile(repo_root / "packaging" / "bin" / filename, app_dir / filename)
 
@@ -471,7 +476,7 @@ def test_collection_rejects_a_source_archive_with_a_wrong_pinned_digest(tmp_path
         )
 
 
-@pytest.mark.parametrize("filename", ["ffmpeg.exe", "libavcodec-61.dll"])
+@pytest.mark.parametrize("filename", ["ffmpeg.exe", "avcodec-61.dll"])
 def test_collection_rejects_changed_runtime_file_hashes(tmp_path, monkeypatch, filename):
     distributions, python_prefix, repo_root = _fake_environment(tmp_path)
     _patch_environment(monkeypatch, distributions, python_prefix, repo_root)
@@ -482,3 +487,27 @@ def test_collection_rejects_changed_runtime_file_hashes(tmp_path, monkeypatch, f
         license_material.collect_release_license_material(
             tmp_path / "release" / "LICENSES", repo_root=repo_root
         )
+
+
+@pytest.mark.parametrize(
+    "relative_path",
+    [
+        "FFmpeg/Source/ffmpeg-9.0.2.tar.xz.asc",
+        "FFmpeg/Source/ffmpeg-release-key.asc",
+        "FFmpeg/LICENSE-LGPL-2.1.txt",
+    ],
+)
+def test_release_validator_rejects_changed_ffmpeg_signature_key_or_license(
+    tmp_path, monkeypatch, relative_path
+):
+    distributions, python_prefix, repo_root = _fake_environment(tmp_path)
+    _patch_environment(monkeypatch, distributions, python_prefix, repo_root)
+    destination = tmp_path / "release" / "LICENSES"
+    _stage_index(destination, repo_root)
+    license_material.collect_release_license_material(destination, repo_root=repo_root)
+
+    material = destination / relative_path
+    material.write_bytes(material.read_bytes() + b"tampered")
+
+    with pytest.raises(license_material.LicenseMaterialError, match="SHA-256"):
+        license_material.validate_release_license_material(destination)

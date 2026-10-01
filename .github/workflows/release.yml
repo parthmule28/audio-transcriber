@@ -2,8 +2,7 @@ name: Windows release
 
 on:
   push:
-    tags:
-      - "v*"
+    # The guarded job builds the candidate branch and version tags only.
   workflow_dispatch:
     inputs:
       version:
@@ -13,9 +12,13 @@ on:
 
 jobs:
   release:
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      github.ref == 'refs/heads/feat/pinned-lgpl-ffmpeg' ||
+      (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v'))
     runs-on: windows-2022
     permissions:
-      contents: write
+      contents: read
     steps:
       # No secrets or OpenRouter API key are used, and no step uploads .wav/.m4a media files.
       - uses: actions/checkout@v4
@@ -57,8 +60,10 @@ jobs:
         run: |
           if [[ "$GITHUB_EVENT_NAME" == "workflow_dispatch" ]]; then
             version="$RELEASE_VERSION"
-          else
+          elif [[ "$GITHUB_REF" == refs/tags/v* ]]; then
             version="${GITHUB_REF_NAME#v}"
+          else
+            version="$(python -c 'from audio_transcriber import __version__; print(__version__)')"
           fi
           python packaging/build_release.py --version "$version"
 
@@ -80,7 +85,9 @@ jobs:
           }
 
       - name: Upload Windows test archive artifact
-        if: github.event_name == 'workflow_dispatch'
+        if: >-
+          github.event_name == 'workflow_dispatch' ||
+          github.ref == 'refs/heads/feat/pinned-lgpl-ffmpeg'
         uses: actions/upload-artifact@v4
         with:
           name: AudioTranscriber-windows-test
@@ -95,8 +102,20 @@ jobs:
           path: dist/AudioTranscriber-v*-win-x64.zip
           if-no-files-found: error
 
+  publish:
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    needs: release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download release archive artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: AudioTranscriber-release
+          path: dist
+
       - name: Publish GitHub Release
-        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
           files: dist/AudioTranscriber-v*-win-x64.zip

@@ -1061,11 +1061,11 @@ git commit -m "build: package onedir Windows app with bundled FFmpeg"
 
 **Interfaces:**
 - Consumes: `python -m pytest`, `packaging/fetch_ffmpeg.py`, `packaging/build_release.py`, `python -m audio_transcriber --self-test`.
-- Produces: a Windows workflow that tests, builds pinned FFmpeg from source, smoke-tests local features, packages and self-tests the app, uploads an Actions artifact for manual dispatch, and publishes the ZIP only for version-tag pushes.
+- Produces: a Windows workflow that tests, builds pinned FFmpeg from source, smoke-tests local features, packages and self-tests the app, uploads an Actions artifact for the candidate-branch push or manual dispatch, and publishes the ZIP only for version-tag pushes in a separate write-permission job.
 
 - [ ] **Step 1: Write `.github/workflows/release.yml`**
 
-Triggers: `push` on tags matching `v*`, plus `workflow_dispatch`. Job runs on `windows-2022`. It sets up MSYS2 UCRT64 with MinGW GCC, NASM, and GnuPG; runs the Python suite; source-builds and signature-verifies pinned FFmpeg 9.0.2; runs the synthetic-media FFmpeg smoke test; packages the ZIP; and runs `AudioTranscriber.exe --self-test` (must exit 0, and `self-test.log` must contain the four check lines). Manual dispatch uploads `AudioTranscriber-windows-test` and does not create a GitHub Release. The Release action remains guarded by a version-tag push.
+Triggers: `push` and `workflow_dispatch`. The Windows build job is guarded to run for version tags, manual dispatches, and pushes to `feat/pinned-lgpl-ffmpeg`; other branch pushes skip the job. It runs on `windows-2022`, sets up MSYS2 UCRT64 with MinGW GCC, NASM, and GnuPG; runs the Python suite; source-builds and signature-verifies pinned FFmpeg 9.0.2; runs the synthetic-media FFmpeg smoke test; packages the ZIP; and runs `AudioTranscriber.exe --self-test` (must exit 0, and `self-test.log` must contain the four check lines). Candidate-branch pushes and manual dispatch upload `AudioTranscriber-windows-test` and do not create a GitHub Release. The build job has read-only repository permissions; a separate tag-only publish job downloads the release artifact and has `contents: write`.
 
 The workflow must define **no** `secrets` or `env` containing an OpenRouter key, and no step may upload `.wav`/`.m4a` files. Add a comment stating both facts explicitly.
 

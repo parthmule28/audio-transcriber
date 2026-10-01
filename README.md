@@ -16,7 +16,7 @@ The app cannot inspect a key's guardrail assignment or verify ZDR. It does not e
 
 ### Windows test build
 
-To try a candidate Windows build, open **Actions → Windows release → Run workflow**, select the feature branch, and enter version `0.1.0`. A successful manual run uploads the `AudioTranscriber-windows-test` artifact for download from that Actions run. **A manual run does not create a GitHub Release.** The existing version-tag workflow remains the only path that publishes a GitHub Release.
+Pushing the `feat/pinned-lgpl-ffmpeg` branch starts the Windows candidate build and uploads an `AudioTranscriber-windows-test` artifact on success. Download it from that branch's Actions run. This push-based path allows Windows validation before the workflow is present on the default branch. Once the workflow is on the default branch, you can also open **Actions → Windows release → Run workflow**, select the feature branch, and enter version `0.1.0`. **Neither path creates a GitHub Release.** Only a version-tag push can publish one.
 
 The candidate build compiles FFmpeg 9.0.2 from the pinned official source archive (`https://ffmpeg.org/releases/ffmpeg-9.0.2.tar.xz`, SHA-256 `8c3850283eb25fa026482078a04051e0be17347b09ef81a0849bec15a96e002e`) and verifies its detached signature against release-key fingerprint `FCF986EA15E6E293A5644F10B4322F04D67658D8`. Its Windows ZIP contains the source, signature, key, LGPL license text, build recipe, toolchain notices, and generated provenance. The build disables GPL, version-3-only, nonfree, autodetection, and network features. Workflow validation is still required before treating a candidate artifact as tested; see [`LICENSES/FFMPEG-SOURCE-COMPLIANCE-BLOCKER.md`](LICENSES/FFMPEG-SOURCE-COMPLIANCE-BLOCKER.md).
 

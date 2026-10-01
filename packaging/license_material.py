@@ -355,6 +355,16 @@ def _metadata_value(metadata_text: str, label: str) -> str:
     return matches[0]
 
 
+def _validate_metadata_file_hash(metadata_text: str, label: str, path: Path) -> str:
+    expected = _metadata_value(metadata_text, label).lower()
+    actual = hashlib.sha256(path.read_bytes()).hexdigest()
+    if actual != expected:
+        raise LicenseMaterialError(
+            f"FFmpeg {label} mismatch for {path.name}: expected {expected}, got {actual}"
+        )
+    return actual
+
+
 def _runtime_hashes(metadata_text: str) -> dict[str, str]:
     if "Runtime-file SHA-256:" not in metadata_text:
         raise LicenseMaterialError("FFmpeg build metadata is missing runtime SHA-256 records")
@@ -412,19 +422,13 @@ def _verify_runtime_hashes(metadata_text: str, runtime_dir: Path, *, staged: boo
             )
 
     recorded_dlls = {name for name in recorded if name.lower().endswith(".dll")}
-    if staged:
-        actual_dlls = {path.name for path in runtime_dir.glob("*.dll") if path.is_file()}
-    else:
-        actual_dlls = {
-            path.name
-            for pattern in ("libav*.dll", "libsw*.dll")
-            for path in runtime_dir.glob(pattern)
-            if path.is_file()
-        }
-    if actual_dlls != recorded_dlls:
+    if staged and {
+        path.name for path in runtime_dir.glob("*.dll") if path.is_file()
+    } != recorded_dlls:
         raise LicenseMaterialError(
             "FFmpeg runtime SHA-256 manifest does not match the staged shared DLL set: "
-            f"expected {sorted(recorded_dlls)}, found {sorted(actual_dlls)}"
+            f"expected {sorted(recorded_dlls)}, found "
+            f"{sorted(path.name for path in runtime_dir.glob('*.dll') if path.is_file())}"
         )
 
 
@@ -500,9 +504,15 @@ def _validate_ffmpeg_material_paths(
         raise LicenseMaterialError(
             "FFmpeg build metadata does not attest to the required LGPL-only configuration"
         )
-    build_hash = hashlib.sha256(build_script.read_bytes()).hexdigest()
-    if _metadata_value(metadata_text, "Build script SHA-256").lower() != build_hash:
-        raise LicenseMaterialError("FFmpeg build-script SHA-256 does not match its included recipe")
+    for label, path in (
+        ("Source signature SHA-256", signature),
+        ("Release key SHA-256", release_key),
+        ("FFmpeg license SHA-256", license_path),
+        ("Build script SHA-256", build_script),
+        ("Source fetcher SHA-256", fetch_script),
+        ("Source offer SHA-256", source_offer),
+    ):
+        _validate_metadata_file_hash(metadata_text, label, path)
 
     offer_text = source_offer.read_text(encoding="utf-8", errors="replace")
     if SOURCE_ARCHIVE_NAME not in offer_text or actual_source_hash not in offer_text:

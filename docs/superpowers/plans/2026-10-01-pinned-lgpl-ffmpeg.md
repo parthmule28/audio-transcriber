@@ -26,7 +26,7 @@
 - A configure change must not silently enable GPL/nonfree/network functionality or disable needed app features; Task 1 tests the explicit build configuration and Task 3 smoke-tests WAV, M4A, OGG, and FLAC.
 - Missing FFmpeg shared libraries, source, license, or hash provenance must prevent ZIP creation; Tasks 2–3 test required material validation and DLL collection.
 - The minimal build must still inspect an M4A, detect quiet sections, and produce 16 kHz mono `pcm_s16le` WAV; Task 3 adds a generated-media Windows CI smoke test.
-- Manual CI must upload a test artifact without publishing a Release, while a versioned tag still uses the existing Release path; Task 4 tests workflow conditions and artifact path.
+- A push to `feat/pinned-lgpl-ffmpeg` must upload a test artifact without publishing a Release, avoiding the GitHub requirement that `workflow_dispatch` first exist on the default branch. Manual dispatch remains available after the workflow reaches the default branch; versioned tags retain the Release path in a separate write-permission job.
 
 ---
 
@@ -102,10 +102,11 @@
 
 **Interfaces:**
 - Consumes the source build, smoke test, PyInstaller package, and `AudioTranscriber.exe --self-test`.
-- Manual dispatch uploads `AudioTranscriber-windows-test` containing `dist/AudioTranscriber-v<version>-win-x64.zip`; it does not publish a Release. Existing tag pushes keep the tag-only Release path.
+- Pushes to this feature branch and manual dispatch upload `AudioTranscriber-windows-test` containing `dist/AudioTranscriber-v<version>-win-x64.zip`; neither path publishes a Release. The `workflow_dispatch` trigger becomes available once the workflow is present on the default branch. Existing tag pushes keep the tag-only Release path, isolated in a write-permission job.
 
-- [x] **Step 1: Write failing workflow tests.** Assert Windows 2022/MSYS2 UCRT64 with MinGW/NASM; source build and synthetic smoke precede packaging; self-test follows packaging; manual artifact upload exists; Release remains tag-only; no secrets/audio paths are used.
+- [x] **Step 1: Write failing workflow tests.** Assert Windows 2022/MSYS2 UCRT64 with MinGW/NASM; source build and synthetic smoke precede packaging; self-test follows packaging; candidate-branch/manual artifact upload exists; Release remains tag-only and permission-isolated; no secrets/audio paths are used.
 - [x] **Step 2: Run tests to verify RED.** Run `PYTHONPATH=src QT_QPA_PLATFORM=offscreen /home/parth/Desktop/Code/audio-transcriber-app/.venv/bin/python -m pytest tests/test_release_workflow.py -q`. Expected: failures for missing MSYS2/build/artifact steps.
-- [x] **Step 3: Update workflow and docs.** Add UCRT64 setup/build/smoke steps, preserve version validation and tag-only Release conditions, name the test artifact, and document that manual CI creates an Actions download but no Release. Record the FFmpeg source URL/hash/signature and minimal LGPL feature set.
+- [x] **Step 3: Update workflow and docs.** Add UCRT64 setup/build/smoke steps, produce candidate-branch artifacts before default-branch dispatch is available, preserve version validation and tag-only Release conditions in a separate write job, name the test artifact, and document that test CI creates an Actions download but no Release. Record the FFmpeg source URL/hash/signature and minimal LGPL feature set.
 - [x] **Step 4: Run full Linux suite and checks.** Run `PYTHONPATH=src QT_QPA_PLATFORM=offscreen /home/parth/Desktop/Code/audio-transcriber-app/.venv/bin/python -m pytest -q`, `bash -n packaging/build_ffmpeg.sh`, and `git diff --check`. Expected: suite green; Windows compilation is verified by CI, not Linux mocks.
-- [ ] **Step 5: Commit on `feat/pinned-lgpl-ffmpeg`; do not create a tag or Release.** Before pushing the branch or dispatching Actions, obtain confirmation because those are external GitHub side effects. Once authorized, manually run workflow with version `0.1.0`, inspect the Windows build/self-test and artifact, and give the user its Actions link.
+- [x] **Step 5: Commit locally on `feat/pinned-lgpl-ffmpeg`; do not create a tag or Release.**
+- [ ] **Step 6: After authorization, push the feature branch.** Its guarded Windows job builds and uploads the candidate artifact on the branch push; inspect the Windows source build, smoke test, app self-test, and ZIP. Manual dispatch is available after the workflow reaches the default branch. Do not create a tag or GitHub Release.

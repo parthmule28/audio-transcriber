@@ -137,8 +137,20 @@ def run_smoke_test(
                 raise RuntimeError(
                     f"Expected {expected_codec} in {encoded.name}, got {stream.get('codec_name')!r}"
                 )
+            decoded_output = temp_dir / f"decoded-{suffix}.null"
             _run(
-                (ffmpeg, "-hide_banner", "-nostdin", "-v", "error", "-i", encoded, "-f", "null", "-"),
+                (
+                    ffmpeg,
+                    "-hide_banner",
+                    "-nostdin",
+                    "-v",
+                    "error",
+                    "-i",
+                    encoded,
+                    "-f",
+                    "null",
+                    decoded_output,
+                ),
                 runner=runner,
             )
 
@@ -155,7 +167,7 @@ def run_smoke_test(
                 "silencedetect=noise=-45dB:d=0.2",
                 "-f",
                 "null",
-                "-",
+                temp_dir / "silence-detection.null",
             ),
             runner=runner,
         )

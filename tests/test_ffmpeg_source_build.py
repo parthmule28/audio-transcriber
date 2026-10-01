@@ -153,6 +153,14 @@ def test_build_script_pins_source_and_lgpl_feature_set():
         assert option in script
     assert "--status-fd 1" in script and '--verify "$source_signature"' in script
     assert "VALIDSIG" in script
+    for provenance_field in (
+        "Source signature SHA-256:",
+        "Release key SHA-256:",
+        "FFmpeg license SHA-256:",
+        "Source fetcher SHA-256:",
+        "Source offer SHA-256:",
+    ):
+        assert provenance_field in script
     assert not re.search(r"--enable-(?:gpl|version3|nonfree)\b", script)
     assert "--enable-lib" not in script
 
@@ -188,7 +196,7 @@ def test_ffmpeg_smoke_script_covers_local_media_and_app_features():
         assert expected in source
 
 
-def test_vorbis_smoke_roundtrip_uses_native_encoder_compatibility_flags(tmp_path):
+def test_smoke_uses_local_file_outputs_and_vorbis_compatibility_flags(tmp_path):
     ffmpeg = tmp_path / "ffmpeg.exe"
     ffprobe = tmp_path / "ffprobe.exe"
     ffmpeg.write_bytes(b"test binary")
@@ -225,3 +233,10 @@ def test_vorbis_smoke_roundtrip_uses_native_encoder_compatibility_flags(tmp_path
     )
     assert vorbis_command[vorbis_command.index("-ac") + 1] == "2"
     assert vorbis_command[vorbis_command.index("-strict") + 1] == "-2"
+    null_commands = [
+        command
+        for command in commands
+        if "-f" in command and command[command.index("-f") + 1] == "null"
+    ]
+    assert null_commands
+    assert all(command[-1] != "-" for command in null_commands)

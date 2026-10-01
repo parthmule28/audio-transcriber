@@ -48,13 +48,24 @@ _SOURCE_HASH = hashlib.sha256(_SOURCE_ARCHIVE).hexdigest()
 _FFMPEG_RUNTIME = {
     "ffmpeg.exe": b"ffmpeg",
     "ffprobe.exe": b"ffprobe",
-    "libavcodec-61.dll": b"codec dll",
-    "libavutil-59.dll": b"util dll",
+    "avcodec-61.dll": b"codec dll",
+    "avutil-59.dll": b"util dll",
 }
 _FFMPEG_BUILD_SCRIPT = b"#!/usr/bin/env bash\n# reproducible UCRT64 test recipe\n"
 _RUNTIME_HASHES = "\n".join(
     f"{hashlib.sha256(content).hexdigest()}  {name}"
     for name, content in _FFMPEG_RUNTIME.items()
+)
+_FFMPEG_LICENSE = _full_text("GNU LESSER GENERAL PUBLIC LICENSE\nVersion 2.1")
+_FFMPEG_SIGNATURE = b"detached signature fixture"
+_FFMPEG_RELEASE_KEY = b"FFmpeg release public key fixture"
+_FFMPEG_FETCHER = b"# pinned source-fetch fixture\n"
+_SOURCE_OFFER = _full_text(
+    "FFmpeg 9.0.2 exact corresponding source included with this distribution\n"
+    f"Source archive SHA-256: {_SOURCE_HASH}\n"
+    "Source archive: ffmpeg-9.0.2.tar.xz\n"
+    "The detached signature, signing key, build recipe, source-fetch script, license, "
+    "runtime hashes, and GCC runtime notices are included in the same ZIP."
 )
 _FFMPEG_BUILD_METADATA = (
     "FFmpeg source-built Windows runtime metadata\n"
@@ -65,6 +76,11 @@ _FFMPEG_BUILD_METADATA = (
     "Source signature: ffmpeg-9.0.2.tar.xz.asc\n"
     "Signature result: VALID\n"
     "Release key fingerprint: FCF986EA15E6E293A5644F10B4322F04D67658D8\n"
+    f"Source signature SHA-256: {hashlib.sha256(_FFMPEG_SIGNATURE).hexdigest()}\n"
+    f"Release key SHA-256: {hashlib.sha256(_FFMPEG_RELEASE_KEY).hexdigest()}\n"
+    f"FFmpeg license SHA-256: {hashlib.sha256(_FFMPEG_LICENSE).hexdigest()}\n"
+    f"Source fetcher SHA-256: {hashlib.sha256(_FFMPEG_FETCHER).hexdigest()}\n"
+    f"Source offer SHA-256: {hashlib.sha256(_SOURCE_OFFER).hexdigest()}\n"
     "Configure arguments:\n"
     "  --disable-everything\n"
     "  --disable-gpl\n"
@@ -78,25 +94,16 @@ _FFMPEG_BUILD_METADATA = (
     f"{_RUNTIME_HASHES}\n"
     f"Build script SHA-256: {hashlib.sha256(_FFMPEG_BUILD_SCRIPT).hexdigest()}\n"
 )
-_SOURCE_OFFER = _full_text(
-    "FFmpeg 9.0.2 exact corresponding source included with this distribution\n"
-    f"Source archive SHA-256: {_SOURCE_HASH}\n"
-    "Source archive: ffmpeg-9.0.2.tar.xz\n"
-    "The detached signature, signing key, build recipe, source-fetch script, license, "
-    "runtime hashes, and GCC runtime notices are included in the same ZIP."
-)
 _RELEASE_LICENSES = {
     "BUILD-METADATA.txt": b"Collected package versions and provenance (fixture)\n",
-    "FFmpeg/LICENSE-LGPL-2.1.txt": _full_text(
-        "GNU LESSER GENERAL PUBLIC LICENSE\nVersion 2.1"
-    ),
+    "FFmpeg/LICENSE-LGPL-2.1.txt": _FFMPEG_LICENSE,
     "FFmpeg/BUILD-METADATA.txt": _FFMPEG_BUILD_METADATA.encode(),
     "FFmpeg/SOURCE-OFFER.md": _SOURCE_OFFER,
     "FFmpeg/Source/ffmpeg-9.0.2.tar.xz": _SOURCE_ARCHIVE,
-    "FFmpeg/Source/ffmpeg-9.0.2.tar.xz.asc": b"detached signature fixture",
-    "FFmpeg/Source/ffmpeg-release-key.asc": b"FFmpeg release public key fixture",
+    "FFmpeg/Source/ffmpeg-9.0.2.tar.xz.asc": _FFMPEG_SIGNATURE,
+    "FFmpeg/Source/ffmpeg-release-key.asc": _FFMPEG_RELEASE_KEY,
     "FFmpeg/Source/build_ffmpeg.sh": _FFMPEG_BUILD_SCRIPT,
-    "FFmpeg/Source/fetch_ffmpeg.py": b"# pinned source-fetch fixture\n",
+    "FFmpeg/Source/fetch_ffmpeg.py": _FFMPEG_FETCHER,
     "FFmpeg/GCC-RUNTIME-LICENSES/gcc/COPYING.RUNTIME": _full_text(
         "GCC Runtime Library Exception"
     ),
@@ -292,8 +299,8 @@ def test_spec_is_parseable_onedir_and_includes_only_existing_optional_assets(tmp
     bin_dir.mkdir()
     (bin_dir / "ffmpeg.exe").write_bytes(b"ffmpeg")
     (bin_dir / "ffprobe.exe").write_bytes(b"ffprobe")
-    (bin_dir / "libavcodec-61.dll").write_bytes(b"codec")
-    (bin_dir / "libavutil-59.dll").write_bytes(b"util")
+    (bin_dir / "avcodec-61.dll").write_bytes(b"codec")
+    (bin_dir / "avutil-59.dll").write_bytes(b"util")
     licenses_dir = packaging_dir.parent / "LICENSES"
     licenses_dir.mkdir()
     populated = _execute_spec(spec_text, packaging_dir)["analysis"]
@@ -303,8 +310,8 @@ def test_spec_is_parseable_onedir_and_includes_only_existing_optional_assets(tmp
     assert binaries == {
         ("ffmpeg.exe", "."),
         ("ffprobe.exe", "."),
-        ("libavcodec-61.dll", "."),
-        ("libavutil-59.dll", "."),
+        ("avcodec-61.dll", "."),
+        ("avutil-59.dll", "."),
     }
 
 
@@ -317,10 +324,11 @@ def test_spec_collects_all_ffmpeg_shared_libraries(tmp_path):
     expected_files = (
         "ffmpeg.exe",
         "ffprobe.exe",
-        "libavcodec-61.dll",
-        "libavformat-61.dll",
-        "libavutil-59.dll",
-        "libswresample-5.dll",
+        "avcodec-61.dll",
+        "avformat-61.dll",
+        "avfilter-10.dll",
+        "avutil-59.dll",
+        "swresample-5.dll",
     )
     for filename in expected_files:
         (bin_dir / filename).write_bytes(filename.encode())

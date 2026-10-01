@@ -52,14 +52,18 @@ def test_workflow_builds_and_smoke_tests_pinned_ffmpeg_before_packaging():
 
 def test_manual_workflow_uploads_only_a_windows_test_artifact_and_never_releases():
     workflow = (REPO_ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
+    normalized = " ".join(workflow.split())
 
     assert "name: Upload Windows test archive artifact" in workflow
-    assert "if: github.event_name == 'workflow_dispatch'" in workflow
+    assert (
+        "if: >- github.event_name == 'workflow_dispatch' || "
+        "github.ref == 'refs/heads/feat/pinned-lgpl-ffmpeg'"
+    ) in normalized
     assert "name: AudioTranscriber-windows-test" in workflow
     assert "path: dist/AudioTranscriber-v*-win-x64.zip" in workflow
     assert "if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')" in workflow
-    release_step = workflow.index("name: Publish GitHub Release")
-    assert "if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')" in workflow[release_step:]
+    publish_job = workflow[workflow.index("  publish:"):]
+    assert "if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')" in publish_job
     assert "secrets." not in workflow
     assert "OPENROUTER_API_KEY" not in workflow
     assert ".wav" in workflow and "no step uploads" in workflow.lower()
@@ -70,6 +74,33 @@ def test_readme_explains_how_to_get_test_artifact_without_a_release():
 
     assert "AudioTranscriber-windows-test" in readme
     assert "Run workflow" in readme
-    assert "does not create a GitHub Release" in readme
+    assert "Neither path creates a GitHub Release" in readme
     assert "ffmpeg-9.0.2.tar.xz" in readme
     assert "8c3850283eb25fa026482078a04051e0be17347b09ef81a0849bec15a96e002e" in readme
+
+
+def test_candidate_branch_push_builds_and_uploads_without_requiring_default_branch_dispatch():
+    workflow = (REPO_ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
+
+    assert re.search(r"on:\s*\n\s+push:\s*\n", workflow)
+    assert "github.ref == 'refs/heads/feat/pinned-lgpl-ffmpeg'" in workflow
+    assert "AudioTranscriber-windows-test" in workflow
+    assert "github.ref == 'refs/heads/feat/pinned-lgpl-ffmpeg'" in workflow[
+        workflow.index("name: Upload Windows test archive artifact"):
+    ]
+    assert "from audio_transcriber import __version__" in workflow
+
+
+def test_build_job_has_read_only_token_and_tag_release_uses_separate_write_job():
+    workflow = (REPO_ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
+
+    build_start = workflow.index("  release:")
+    publish_start = workflow.index("  publish:")
+    build_job = workflow[build_start:publish_start]
+    publish_job = workflow[publish_start:]
+    assert re.search(r"permissions:\s*\n\s+contents: read", build_job)
+    assert "needs: release" in publish_job
+    assert "contents: write" in publish_job
+    assert "actions/download-artifact@v4" in publish_job
+    assert "name: AudioTranscriber-release" in build_job
+    assert "if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')" in publish_job

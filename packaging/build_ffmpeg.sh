@@ -231,11 +231,24 @@ EOF
 printf 'Source SHA-256: %s\n' "$actual_source_hash" >>"$stage_dir/FFMPEG-BUILD-METADATA.txt"
 printf 'Build script SHA-256: %s\n' "$(sha256sum "$stage_dir/build_ffmpeg.sh" | awk '{print $1}')" \
     >>"$stage_dir/FFMPEG-BUILD-METADATA.txt"
+printf 'Source signature SHA-256: %s\n' \
+    "$(sha256sum "$stage_dir/$SOURCE_ARCHIVE_NAME.asc" | awk '{print $1}')" \
+    >>"$stage_dir/FFMPEG-BUILD-METADATA.txt"
+printf 'Release key SHA-256: %s\n' \
+    "$(sha256sum "$stage_dir/ffmpeg-release-key.asc" | awk '{print $1}')" \
+    >>"$stage_dir/FFMPEG-BUILD-METADATA.txt"
+printf 'FFmpeg license SHA-256: %s\n' \
+    "$(sha256sum "$stage_dir/FFMPEG-LICENSE-LGPL-2.1.txt" | awk '{print $1}')" \
+    >>"$stage_dir/FFMPEG-BUILD-METADATA.txt"
+printf 'Source fetcher SHA-256: %s\n' \
+    "$(sha256sum "$stage_dir/fetch_ffmpeg.py" | awk '{print $1}')" \
+    >>"$stage_dir/FFMPEG-BUILD-METADATA.txt"
 printf 'Source offer SHA-256: %s\n' "$(sha256sum "$stage_dir/FFMPEG-SOURCE-OFFER.md" | awk '{print $1}')" \
     >>"$stage_dir/FFMPEG-BUILD-METADATA.txt"
 
 # Replace only known generated FFmpeg outputs in the ignored staging directory.
 for stale in "$output_dir/ffmpeg.exe" "$output_dir/ffprobe.exe" \
+    "$output_dir"/av*.dll "$output_dir"/sw*.dll \
     "$output_dir"/libav*.dll "$output_dir"/libsw*.dll \
     "$output_dir"/ffmpeg-"$FFMPEG_VERSION".tar.xz \
     "$output_dir"/ffmpeg-"$FFMPEG_VERSION".tar.xz.asc \
