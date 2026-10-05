@@ -41,6 +41,7 @@ jobs:
         run: pip install -e ".[dev,packaging]"
 
       - name: Run tests
+        shell: msys2 {0}
         run: python -m pytest tests/ -q
 
       - name: Build pinned LGPL FFmpeg from source

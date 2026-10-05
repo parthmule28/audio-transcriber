@@ -33,7 +33,7 @@ def test_self_test_writes_identical_summary_to_log(tmp_path, monkeypatch, capsys
     monkeypatch.chdir(tmp_path)
     result = run_self_test(probe_fn=fake_probe_ok, binary_probe=lambda name: f"/fake/{name}")
     output = capsys.readouterr().out
-    assert (tmp_path / "self-test.log").read_text() == output
+    assert (tmp_path / "self-test.log").read_text(encoding="utf-8") == output
     assert all(name in output for name, _, _ in result.checks)
 
 

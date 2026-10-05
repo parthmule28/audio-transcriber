@@ -46,7 +46,11 @@ def test_workflow_builds_and_smoke_tests_pinned_ffmpeg_before_packaging():
     smoke_test = workflow.index("packaging/smoke_test_ffmpeg.py")
     package = workflow.index("python packaging/build_release.py --version")
     self_test = workflow.index("Self-test packaged application")
+    tests_start = workflow.index("- name: Run tests")
+    tests_end = workflow.index("- name: Build pinned LGPL FFmpeg from source")
+    run_tests = workflow[tests_start:tests_end]
     assert source_build < smoke_test < package < self_test
+    assert "shell: msys2 {0}" in run_tests
     assert "AudioTranscriber.exe --self-test" in workflow
 
 

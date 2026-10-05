@@ -46,7 +46,10 @@ def test_rejects_empty_or_whitespace_key():
 
 
 def test_unavailable_backend_fails_closed_without_writing_anywhere(tmp_path, monkeypatch):
+    import keyring
+
     monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(keyring, "get_keyring", lambda: FakeBackend())
     with pytest.raises(CredentialStoreUnavailable):
         CredentialStore(backend=None, require_windows_backend=True).save("sk-or-v1-secret")
     assert list(tmp_path.iterdir()) == []
