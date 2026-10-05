@@ -40,8 +40,11 @@ jobs:
       - name: Install dependencies
         run: pip install -e ".[dev,packaging]"
 
-      - name: Run tests
+      - name: Check FFmpeg build script syntax
         shell: msys2 {0}
+        run: bash -n packaging/build_ffmpeg.sh
+
+      - name: Run tests
         run: python -m pytest tests/ -q
 
       - name: Build pinned LGPL FFmpeg from source

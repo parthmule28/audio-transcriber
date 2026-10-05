@@ -46,11 +46,15 @@ def test_workflow_builds_and_smoke_tests_pinned_ffmpeg_before_packaging():
     smoke_test = workflow.index("packaging/smoke_test_ffmpeg.py")
     package = workflow.index("python packaging/build_release.py --version")
     self_test = workflow.index("Self-test packaged application")
+    syntax_start = workflow.index("- name: Check FFmpeg build script syntax")
     tests_start = workflow.index("- name: Run tests")
     tests_end = workflow.index("- name: Build pinned LGPL FFmpeg from source")
+    syntax_step = workflow[syntax_start:tests_start]
     run_tests = workflow[tests_start:tests_end]
     assert source_build < smoke_test < package < self_test
-    assert "shell: msys2 {0}" in run_tests
+    assert syntax_start < tests_start
+    assert "shell: msys2 {0}" in syntax_step
+    assert "bash -n packaging/build_ffmpeg.sh" in syntax_step
     assert "AudioTranscriber.exe --self-test" in workflow
 
 

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import io
+import os
 import re
 import subprocess
 import sys
@@ -167,6 +168,8 @@ def test_build_script_pins_source_and_lgpl_feature_set():
 
 
 def test_build_script_has_valid_bash_syntax():
+    if os.name == "nt":
+        pytest.skip("Windows workflow checks Bash syntax in its dedicated MSYS2 step")
     script = REPO_ROOT / "packaging" / "build_ffmpeg.sh"
     result = subprocess.run(
         ["bash", "-n", str(script)], capture_output=True, text=True, check=False
