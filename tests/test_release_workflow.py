@@ -39,6 +39,7 @@ def test_workflow_builds_and_smoke_tests_pinned_ffmpeg_before_packaging():
     for package in (
         "mingw-w64-ucrt-x86_64-gcc",
         "mingw-w64-ucrt-x86_64-nasm",
+        "mingw-w64-ucrt-x86_64-python",
         "gnupg",
     ):
         assert package in workflow

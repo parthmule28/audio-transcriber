@@ -36,6 +36,7 @@ jobs:
             gnupg
             mingw-w64-ucrt-x86_64-gcc
             mingw-w64-ucrt-x86_64-nasm
+            mingw-w64-ucrt-x86_64-python
 
       - name: Install dependencies
         run: pip install -e ".[dev,packaging]"
